@@ -2,14 +2,17 @@
 import { useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
-  HomeIcon, ShoppingCartIcon, CubeIcon, UsersIcon, 
-  Cog6ToothIcon, ClipboardDocumentListIcon, ChartBarIcon,
-  EllipsisHorizontalCircleIcon
+  HomeIcon,
+  ShoppingCartIcon,
+  CubeIcon,
+  UsersIcon,
+  EllipsisHorizontalCircleIcon,
 } from '@heroicons/react/24/outline';
 import {
-  HomeIcon as HomeSolid, ShoppingCartIcon as CartSolid,
-  CubeIcon as CubeSolid, UsersIcon as UsersSolid,
-  EllipsisHorizontalCircleIcon as MoreSolid
+  HomeIcon as HomeSolid,
+  ShoppingCartIcon as CartSolid,
+  CubeIcon as CubeSolid,
+  UsersIcon as UsersSolid,
 } from '@heroicons/react/24/solid';
 import { MoreMenu } from './MoreMenu';
 
@@ -57,4 +60,4 @@ export const BottomNav = () => {
       <MoreMenu isOpen={showMore} onClose={() => setShowMore(false)} />
     </>
   );
-}
+};

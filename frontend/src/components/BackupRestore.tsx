@@ -11,8 +11,6 @@ import {
   ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline';
 
-const CURRENT_BACKUP_VERSION = 1;   // must match backupUtils
-
 function reviveDates(data: any): any {
   if (Array.isArray(data)) return data.map(reviveDates);
   if (data !== null && typeof data === 'object') {
@@ -31,7 +29,7 @@ function reviveDates(data: any): any {
 }
 
 export function BackupRestore() {
-  const { shop, user } = useAuthStore();
+  const { shop } = useAuthStore();
   const { addToast } = useUIStore();
 
   const [backupLoading, setBackupLoading] = useState(false);
