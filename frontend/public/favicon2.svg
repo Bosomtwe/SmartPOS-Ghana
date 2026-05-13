@@ -1,0 +1,30 @@
+<!-- favicon.svg -->
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="512" height="512" rx="120" fill="#16A34A"/>
+
+  <!-- Main S -->
+  <path
+    d="M330 150C300 120 255 110 210 120C165 130 135 160 135 200C135 245 170 265 235 280C285 292 305 302 305 325C305 350 280 365 245 365C210 365 180 352 155 330"
+    stroke="white"
+    stroke-width="42"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Accent A shape -->
+  <path
+    d="M340 365L385 230L430 365"
+    stroke="#0F172A"
+    stroke-width="30"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <path
+    d="M355 315H415"
+    stroke="#0F172A"
+    stroke-width="24"
+    stroke-linecap="round"
+  />
+</svg>

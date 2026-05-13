@@ -1,0 +1,13 @@
+# Environment
+.env
+
+# Static files collected by collectstatic
+staticfiles/
+
+# Node / frontend (if present in root)
+node_modules/
+dist/
+
+# Other
+*.pyc
+__pycache__/

@@ -1,0 +1,44 @@
+{
+  "metadata": {
+    "version": 1,
+    "timestamp": "2026-05-05T10:00:00.000Z",
+    "shopId": "00000000-0000-0000-0000-000000000000",
+    "tables": ["products", "customers", "sales", "creditTransactions"]
+  },
+  "products": [
+    {
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "name": "Test Product 1",
+      "sku": "TP001",
+      "costPrice": 5.00,
+      "sellingPrice": 10.00,
+      "currentStock": 20,
+      "lowStockThreshold": 5,
+      "isActive": true,
+      "shopId": "00000000-0000-0000-0000-000000000000"
+    },
+    {
+      "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+      "name": "Test Product 2",
+      "sku": "TP002",
+      "costPrice": 3.50,
+      "sellingPrice": 7.00,
+      "currentStock": 8,
+      "lowStockThreshold": 5,
+      "isActive": true,
+      "shopId": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+  "customers": [
+    {
+      "id": "c3d4e5f6-a7b8-9012-cdef-123456789012",
+      "name": "John Doe",
+      "phone": "0551234567",
+      "totalCredit": 0,
+      "creditLimit": 200,
+      "shopId": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+  "sales": [],
+  "creditTransactions": []
+}

@@ -1,0 +1,162 @@
+/* 1. Import Tailwind CSS (v4) */
+@import "tailwindcss";
+
+/* 2. Define custom theme */
+@theme {
+  --color-primary-green: #0F6B3E;
+  --color-primary-green-light: #1A8B54;
+  --color-primary-green-dark: #0A4F2E;
+  --color-accent-gold: #E6A817;
+  --color-error-red: #DC2626;
+  --color-warning-amber: #F59E0B;
+  --color-success-green: #10B981;
+  --color-info-blue: #3B82F6;
+
+  --font-display: Inter, system-ui, -apple-system, sans-serif;
+  --font-body: Inter, system-ui, -apple-system, sans-serif;
+
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-3xl: 20px;
+  --radius-4xl: 24px;
+
+  --shadow-card: 0 4px 12px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.05);
+  --shadow-card-hover: 0 12px 24px rgba(0,0,0,0.08);
+  --shadow-button-primary: 0 2px 8px rgba(15,107,62,0.08);
+  --shadow-button-primary-hover: 0 8px 16px rgba(15,107,62,0.15);
+}
+
+/* 3. Global variables */
+:root {
+  --text: #6b6375;
+  --text-h: #08060d;
+  --bg: #fff;
+  --border: #e5e4e7;
+  --code-bg: #f4f3ec;
+  --accent: #aa3bff;
+  --accent-bg: rgba(170, 59, 255, 0.1);
+  --accent-border: rgba(170, 59, 255, 0.5);
+  --social-bg: rgba(244, 243, 236, 0.5);
+  --shadow: rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, Consolas, monospace;
+  font: 18px/145% var(--sans);
+  letter-spacing: 0.18px;
+  color-scheme: light dark;
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #9ca3af;
+    --text-h: #f3f4f6;
+    --bg: #16171d;
+    --border: #2e303a;
+    --code-bg: #1f2028;
+    --accent: #c084fc;
+    --accent-bg: rgba(192, 132, 252, 0.15);
+    --accent-border: rgba(192, 132, 252, 0.5);
+    --social-bg: rgba(47, 48, 58, 0.5);
+    --shadow: rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
+  }
+  #social .button-icon {
+    filter: invert(1) brightness(2);
+  }
+}
+
+/* ===== MOBILE‑FIRST ROOT – FULL WIDTH ===== */
+#root {
+  width: 100%;
+  max-width: 100%;
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  background: var(--bg);
+}
+
+@media (min-width: 1126px) {
+  #root {
+    width: 1126px;
+    margin: 0 auto;
+    border-inline: 1px solid var(--border);
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+}
+
+h1, h2 {
+  font-family: var(--heading);
+  font-weight: 500;
+  color: var(--text-h);
+}
+
+h1 {
+  font-size: 56px;
+  letter-spacing: -1.68px;
+  margin: 32px 0;
+}
+@media (max-width: 1024px) {
+  h1 {
+    font-size: 36px;
+    margin: 20px 0;
+  }
+}
+
+h2 {
+  font-size: 24px;
+  line-height: 118%;
+  letter-spacing: -0.24px;
+  margin: 0 0 8px;
+}
+@media (max-width: 1024px) {
+  h2 {
+    font-size: 20px;
+  }
+}
+
+p { margin: 0; }
+
+code, .counter {
+  font-family: var(--mono);
+  display: inline-flex;
+  border-radius: 4px;
+  color: var(--text-h);
+}
+code {
+  font-size: 15px;
+  line-height: 135%;
+  padding: 4px 8px;
+  background: var(--code-bg);
+}
+
+/* ========== SAFE AREA & LANDSCAPE UTILITIES ========== */
+@layer utilities {
+  .pb-safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0.75rem);
+  }
+  .pt-safe-top {
+    padding-top: env(safe-area-inset-top, 0);
+  }
+}
+
+/* ✅ FORCE 3 COLUMNS IN LANDSCAPE (overrides Tailwind) */
+@media (orientation: landscape) {
+  .grid-landscape-3cols {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+}
+
+/* Prevent zoom on input focus (iOS) */
+input, textarea, select, button {
+  font-size: 16px;
+}

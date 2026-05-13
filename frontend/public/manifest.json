@@ -1,0 +1,22 @@
+{
+  "name": "SmartPOS Ghana",
+  "short_name": "SmartPOS",
+  "description": "Point of Sale system for Ghanaian businesses",
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#0F6B3E",
+  "background_color": "#0F6B3E",
+  "icons": [
+    {
+      "src": "/android-chrome-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

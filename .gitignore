@@ -1,0 +1,4 @@
+.env
+staticfiles/
+node_modules/
+dist/

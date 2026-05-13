@@ -1,0 +1,76 @@
+// src/App.tsx
+import React, { useEffect } from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { useAuthStore } from './stores/authStore';
+import { useSyncStore } from './stores/syncStore';
+import Login from './pages/Login';
+import Signup from './pages/Signup';
+import ResetPassword from './pages/ResetPassword';
+import ForgotPassword from './pages/ForgotPassword';
+import LogoutPage from './pages/Logout';
+import Pos from './pages/Pos';
+import Dashboard from './pages/Dashboard';
+import Inventory from './pages/Inventory';
+import Customers from './pages/Customers';
+import SalesHistory from './pages/SalesHistory';
+import Reports from './pages/Reports';
+import Settings from './pages/Settings';
+import { BottomNav } from './components/BottomNav';
+import { Sidebar } from './components/Sidebar';
+import ErrorBoundary from './components/ErrorBoundary';
+import AnalyticsPage from './pages/AnalyticsPage';
+
+function PrivateRoute({ children }: { children: React.ReactElement }) {
+  const token = useAuthStore((state) => state.token);
+  return token ? children : <Navigate to="/login" replace />;
+}
+
+function AppLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <Sidebar />
+      {/* ✅ Sidebar offset only on large screens (≥1024px) */}
+      <div className="lg:ml-64 pb-16 lg:pb-0">
+        {children}
+      </div>
+      {/* Bottom navigation appears automatically on screens <1024px */}
+      <BottomNav />
+    </div>
+  );
+}
+
+export default function App() {
+  const refreshPendingCount = useSyncStore((state) => state.refreshPendingCount);
+
+  useEffect(() => {
+    refreshPendingCount();
+  }, [refreshPendingCount]);
+
+  return (
+    <BrowserRouter>
+      <ErrorBoundary>
+        <Routes>
+          {/* Public routes */}
+          <Route path="/login" element={<Login />} />
+          <Route path="/signup" element={<Signup />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password/:uidb64/:token" element={<ResetPassword />} />
+          <Route path="/logout" element={<LogoutPage />} />
+
+          {/* Protected routes */}
+          <Route path="/" element={<PrivateRoute><AppLayout><Dashboard /></AppLayout></PrivateRoute>} />
+          <Route path="/pos" element={<PrivateRoute><AppLayout><Pos /></AppLayout></PrivateRoute>} />
+          <Route path="/inventory" element={<PrivateRoute><AppLayout><Inventory /></AppLayout></PrivateRoute>} />
+          <Route path="/customers" element={<PrivateRoute><AppLayout><Customers /></AppLayout></PrivateRoute>} />
+          <Route path="/sales" element={<PrivateRoute><AppLayout><SalesHistory /></AppLayout></PrivateRoute>} />
+          <Route path="/reports" element={<PrivateRoute><AppLayout><Reports /></AppLayout></PrivateRoute>} />
+          <Route path="/settings" element={<PrivateRoute><AppLayout><Settings /></AppLayout></PrivateRoute>} />
+          <Route path="/analytics" element={<PrivateRoute><AppLayout><AnalyticsPage /></AppLayout></PrivateRoute>} />
+
+          {/* Catch-all */}
+          <Route path="*" element={<Navigate to="/login" replace />} />
+        </Routes>
+      </ErrorBoundary>
+    </BrowserRouter>
+  );
+}
