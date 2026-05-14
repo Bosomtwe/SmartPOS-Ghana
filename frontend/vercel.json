@@ -3,6 +3,10 @@
     {
       "source": "/api/v1/(.*)",
       "destination": "https://web-production-ba12f.up.railway.app/api/v1/$1"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
   ]
 }
