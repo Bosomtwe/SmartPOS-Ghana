@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/v1/(.*)",
+      "destination": "https://humorous-fascination.up.railway.app/api/v1/$1"
+    }
+  ]
+}
