@@ -129,6 +129,12 @@ REST_FRAMEWORK = {
     ),
 }
 
+# Disable browsable API in production (avoid static file errors)
+if not DEBUG:
+    REST_FRAMEWORK['DEFAULT_RENDERER_CLASSES'] = (
+        'rest_framework.renderers.JSONRenderer',
+    )
+
 # JWT settings
 from datetime import timedelta
 SIMPLE_JWT = {
@@ -207,6 +213,10 @@ EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER')          # your Gmail addres
 EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD')  # generate from Google Account → Security → App passwords
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'noreply@smartpos.com')
 
+# If any critical email setting is missing, fallback to console backend (to avoid crashes)
+if not all([EMAIL_HOST_USER, EMAIL_HOST_PASSWORD]):
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+
 
 # ===============================
 # Frontend URL (used to build password reset links)
@@ -246,3 +256,6 @@ LOGGING = {
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+
+# Ensure static root directory exists
+os.makedirs(STATIC_ROOT, exist_ok=True)
