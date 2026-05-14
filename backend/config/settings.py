@@ -148,6 +148,9 @@ SIMPLE_JWT = {
 #]
 # CORS – allow the frontend domain
 CORS_ALLOWED_ORIGINS = os.environ.get('CORS_ALLOWED_ORIGINS', '').split(',')
+CSRF_TRUSTED_ORIGINS = os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',')
+CSRF_TRUSTED_ORIGINS = [origin for origin in CSRF_TRUSTED_ORIGINS if origin]
+CORS_ALLOW_CREDENTIALS = True
 
 
 # Security settings
