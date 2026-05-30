@@ -5,6 +5,7 @@ import { Modal } from './Modal';
 import { Button } from './Button';
 import { CustomerSelector } from './CustomerSelector';
 import { useUIStore } from '../stores/uiStore';
+import { useCustomerStore } from '../stores/customerStore';
 
 interface PaymentModalProps {
   isOpen: boolean;
@@ -22,6 +23,8 @@ const paymentMethods = [
 
 export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing = false }: PaymentModalProps) => {
   const { addToast } = useUIStore();
+  const { customers } = useCustomerStore();
+
   const [paymentMethod, setPaymentMethod] = useState('CASH');
   const [customerId, setCustomerId] = useState<string | undefined>();
   const [amountTendered, setAmountTendered] = useState<string>('');
@@ -32,6 +35,7 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
 
   const confirmingRef = useRef(false);
 
+  // Reset state when modal opens
   useEffect(() => {
     if (isOpen) {
       setPaymentMethod('CASH');
@@ -45,7 +49,14 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
     }
   }, [isOpen]);
 
-  // Calculate discount amount
+  // Clear customer when switching away from CREDIT
+  const handlePaymentMethodChange = (method: string) => {
+    setPaymentMethod(method);
+    if (method !== 'CREDIT') {
+      setCustomerId(undefined);
+    }
+  };
+
   const discountAmount = (): number => {
     if (!discountValue || discountType === 'none') return 0;
     const val = parseFloat(discountValue);
@@ -60,8 +71,27 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
   const finalTotal = total - discountAmount();
   const changeAmount = amountTendered ? parseFloat(amountTendered) - finalTotal : 0;
 
+  // Credit limit check
+  const selectedCustomer = customerId ? customers.find(c => c.id === customerId) : null;
+  let remainingCredit: number | null = null;
+  let isCreditLimitExceeded = false;
+
+  if (paymentMethod === 'CREDIT' && selectedCustomer && selectedCustomer.creditLimit !== undefined && selectedCustomer.creditLimit !== null) {
+    const currentDebt = selectedCustomer.totalCredit || 0;
+    const limit = selectedCustomer.creditLimit;
+    remainingCredit = limit - currentDebt;
+    if (finalTotal > remainingCredit) {
+      isCreditLimitExceeded = true;
+    }
+  }
+
   const handleFinish = () => {
     if (confirmingRef.current) return;
+
+    if (isCreditLimitExceeded) {
+      addToast({ message: 'Credit limit would be exceeded. Cannot proceed.', type: 'warning' });
+      return;
+    }
 
     if (paymentMethod === 'CREDIT' && !customerId) {
       addToast({ message: 'Please select a customer for credit sale.', type: 'warning' });
@@ -96,9 +126,8 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
   const formatCurrency = (val: number) => `GHS ${val.toFixed(2)}`;
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Complete Payment">
+    <Modal isOpen={isOpen} onClose={onClose} title="Complete Payment" closeOnBackdropClick={false}>
       <div className="space-y-5">
-        {/* Total display */}
         <div className="text-center py-5 bg-green-50 rounded-2xl border border-green-100">
           <p className="text-xs text-green-700 font-bold uppercase tracking-widest">
             Total Payable
@@ -113,7 +142,6 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
           )}
         </div>
 
-        {/* Discount toggle */}
         <div className="flex items-center justify-between">
           <button
             type="button"
@@ -129,10 +157,8 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
           )}
         </div>
 
-        {/* Discount input – mobile optimised */}
         {showDiscountInput && (
           <div className="p-4 bg-gray-50 rounded-xl space-y-3">
-            {/* Quick discount buttons */}
             <div className="flex gap-2 flex-wrap">
               {[5, 10, 15, 20].map((pct) => (
                 <button
@@ -148,8 +174,6 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
                 </button>
               ))}
             </div>
-
-            {/* Detailed fields */}
             <div className="space-y-2 sm:space-y-0 sm:flex sm:gap-2">
               <select
                 value={discountType}
@@ -177,7 +201,6 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
                 />
               </div>
             </div>
-
             {discountValue && (
               <p className="text-xs text-gray-500 flex items-center justify-between">
                 <span>Discount:</span>
@@ -189,8 +212,7 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
           </div>
         )}
 
-        {/* Payment methods */}
-        <RadioGroup value={paymentMethod} onChange={setPaymentMethod}>
+        <RadioGroup value={paymentMethod} onChange={handlePaymentMethodChange}>
           <RadioGroup.Label className="text-sm font-bold text-gray-900">
             Payment Method
           </RadioGroup.Label>
@@ -214,7 +236,6 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
           </div>
         </RadioGroup>
 
-        {/* Cash amount tendered */}
         {paymentMethod === 'CASH' && (
           <div className="space-y-2">
             <label className="block text-sm font-medium text-gray-700">
@@ -234,15 +255,12 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
             </div>
             {amountTendered && parseFloat(amountTendered) >= finalTotal && (
               <div className="p-3 bg-green-50 rounded-xl text-green-700">
-                <p className="font-medium">
-                  Change: {formatCurrency(changeAmount)}
-                </p>
+                <p className="font-medium">Change: {formatCurrency(changeAmount)}</p>
               </div>
             )}
           </div>
         )}
 
-        {/* MoMo number – optional */}
         {paymentMethod === 'MOMO' && (
           <div className="space-y-2">
             <label className="block text-sm font-medium text-gray-700">
@@ -258,7 +276,6 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
           </div>
         )}
 
-        {/* Credit customer */}
         {paymentMethod === 'CREDIT' && (
           <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl space-y-3">
             <h4 className="text-sm font-bold text-gray-800">Select Customer</h4>
@@ -266,6 +283,26 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
               selectedId={customerId}
               onSelect={(id) => setCustomerId(id)}
             />
+            {selectedCustomer && selectedCustomer.creditLimit !== undefined && selectedCustomer.creditLimit !== null && (
+              <div className={`p-3 rounded-xl text-sm ${isCreditLimitExceeded ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-blue-50 text-blue-700'}`}>
+                {isCreditLimitExceeded ? (
+                  <>
+                    <p className="font-bold">⚠️ Credit limit would be exceeded</p>
+                    <p className="text-xs mt-1">
+                      Remaining credit: {formatCurrency(remainingCredit!)}<br />
+                      Cart total: {formatCurrency(finalTotal)}<br />
+                      Required additional: {formatCurrency(finalTotal - remainingCredit!)}
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-xs">
+                    Credit limit: {formatCurrency(selectedCustomer.creditLimit)}<br />
+                    Current debt: {formatCurrency(selectedCustomer.totalCredit || 0)}<br />
+                    Remaining: {formatCurrency(remainingCredit!)}
+                  </p>
+                )}
+              </div>
+            )}
             {!customerId && (
               <p className="text-xs text-red-500 font-medium">
                 * A customer must be assigned for credit sales.
@@ -274,7 +311,6 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
           </div>
         )}
 
-        {/* Actions */}
         <div className="flex gap-3 pt-2">
           <Button variant="secondary" onClick={onClose} className="flex-1 py-3 text-base">
             Cancel
@@ -282,7 +318,7 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
           <Button
             onClick={handleFinish}
             className="flex-1 py-3 text-base"
-            disabled={isProcessing || confirmingRef.current}
+            disabled={isProcessing || confirmingRef.current || isCreditLimitExceeded}
           >
             {isProcessing ? 'Processing...' : 'Confirm Sale'}
           </Button>

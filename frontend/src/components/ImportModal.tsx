@@ -92,13 +92,13 @@ export default function ImportModal({ onClose, onSuccess }: Props) {
     formData.append('file', file);
 
     try {
-      console.log('Uploading file:', file.name, file.size); // Debug
+      console.log('Uploading file:', file.name, file.size);
 
       const response = await api.post('/products/bulk/', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
 
-      console.log('Response:', response.data); // Debug
+      console.log('Response:', response.data);
 
       const { created, updated, errors } = response.data;
       setImportResult({ created, updated, errors });
@@ -117,10 +117,15 @@ export default function ImportModal({ onClose, onSuccess }: Props) {
         onClose();
       }
     } catch (err: any) {
-      console.error('Upload error:', err); // Debug
+      console.error('Upload error:', err);
       let errorMsg = 'Import failed';
       if (err.response) {
-        errorMsg = err.response.data?.error || `Server error: ${err.response.status}`;
+        // ✅ Friendly message for 403 Forbidden
+        if (err.response.status === 403) {
+          errorMsg = 'Access denied. Only the shop owner can import products.';
+        } else {
+          errorMsg = err.response.data?.error || `Server error: ${err.response.status}`;
+        }
       } else if (err.request) {
         errorMsg = 'Network error. Please check your connection.';
       } else {

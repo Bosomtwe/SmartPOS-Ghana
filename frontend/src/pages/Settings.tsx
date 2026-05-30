@@ -12,6 +12,7 @@ import { ConfirmModal } from '../components/ConfirmModal';
 import { Modal } from '../components/Modal';
 import { BackupRestore } from '../components/BackupRestore';
 import api from '../services/api';
+import { Link } from 'react-router-dom';
 import {
   CloudArrowUpIcon,
   UserPlusIcon,
@@ -26,12 +27,17 @@ import {
   MagnifyingGlassIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  CreditCardIcon,
 } from '@heroicons/react/24/outline';
 
 export default function Settings() {
   const { user, shop, token, refreshToken, setAuth } = useAuthStore();
   const { addToast } = useUIStore();
   const { pendingSales } = useSyncStore();
+
+  // Subscription state
+  const [subscription, setSubscription] = useState<any>(null);
+  const [loadingSub, setLoadingSub] = useState(false);
 
   // Invite & Cashier management state
   const [showInviteModal, setShowInviteModal] = useState(false);
@@ -46,18 +52,35 @@ export default function Settings() {
   const [showResetModal, setShowResetModal] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  // Deactivation state
   const [toggleId, setToggleId] = useState<string | null>(null);
   const [toggleAction, setToggleAction] = useState<'deactivate' | 'reactivate' | null>(null);
   const [showToggleConfirm, setShowToggleConfirm] = useState(false);
   const [toggling, setToggling] = useState(false);
 
-  // Email editing state
   const [emailEditMode, setEmailEditMode] = useState(false);
   const [emailValue, setEmailValue] = useState(user?.email || '');
   const [emailSaving, setEmailSaving] = useState(false);
 
-  // ==================== FETCH CASHIERS (OWNER ONLY) ====================
+  // ==================== FETCH SUBSCRIPTION ====================
+  const fetchSubscription = useCallback(async () => {
+    // Only non‑superuser owners need to see subscription
+    if (user?.role !== 'OWNER' || user?.is_superuser || !shop) return;
+    setLoadingSub(true);
+    try {
+      const res = await api.get('/subscriptions/current/');
+      setSubscription(res.data);
+    } catch (err) {
+      console.error('Failed to fetch subscription', err);
+    } finally {
+      setLoadingSub(false);
+    }
+  }, [user?.role, user?.is_superuser, shop]);
+
+  useEffect(() => {
+    fetchSubscription();
+  }, [fetchSubscription]);
+
+  // ==================== FETCH CASHIERS ====================
   const fetchCashiers = useCallback(async () => {
     if (user?.role !== 'OWNER') return;
     try {
@@ -80,7 +103,6 @@ export default function Settings() {
     fetchCashiers();
   }, [fetchCashiers]);
 
-  // Reset page to 1 when search changes
   useEffect(() => {
     setCashierPage(1);
   }, [cashierSearch]);
@@ -106,7 +128,6 @@ export default function Settings() {
     }
   };
 
-  // ==================== COPY TO CLIPBOARD ====================
   const handleCopyCredentials = () => {
     if (!resetCredentials) return;
     const text = `Phone: ${resetCredentials.phone}\nPassword: ${resetCredentials.newPassword}`;
@@ -170,7 +191,6 @@ export default function Settings() {
     }
   };
 
-  // Sync emailValue with the user object whenever it changes
   useEffect(() => {
     if (user?.email) {
       setEmailValue(user.email);
@@ -220,60 +240,116 @@ export default function Settings() {
                 <span className="font-medium text-gray-900">{user?.role}</span>
               </dd>
             </div>
-            {/* Email field */}
-            <div>
-              <dt className="text-gray-500">Email</dt>
-              {emailEditMode ? (
-                <dd className="mt-1">
-                  <div className="flex flex-col sm:flex-row gap-2">
-                    <div className="relative flex-1">
-                      <EnvelopeIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-                      <input
-                        type="email"
-                        value={emailValue}
-                        onChange={(e) => setEmailValue(e.target.value)}
-                        className="w-full pl-9 pr-3 py-2 text-sm border rounded-lg focus:border-primary-green focus:ring-2 focus:ring-primary-green/20"
-                        placeholder="you@example.com"
-                      />
+
+            {user?.role === 'OWNER' && (
+              <div>
+                <dt className="text-gray-500">Email</dt>
+                {emailEditMode ? (
+                  <dd className="mt-1">
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <div className="relative flex-1">
+                        <EnvelopeIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                        <input
+                          type="email"
+                          value={emailValue}
+                          onChange={(e) => setEmailValue(e.target.value)}
+                          className="w-full pl-9 pr-3 py-2 text-sm border rounded-lg focus:border-primary-green focus:ring-2 focus:ring-primary-green/20"
+                          placeholder="you@example.com"
+                        />
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={handleSaveEmail}
+                          disabled={emailSaving}
+                          className="text-xs px-3 py-2 bg-primary-green text-white rounded-lg hover:bg-green-700 disabled:opacity-50 whitespace-nowrap touch-manipulation"
+                        >
+                          {emailSaving ? 'Saving...' : 'Save'}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setEmailEditMode(false);
+                            setEmailValue(user?.email || '');
+                          }}
+                          className="text-xs px-3 py-2 text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 whitespace-nowrap touch-manipulation"
+                        >
+                          Cancel
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={handleSaveEmail}
-                        disabled={emailSaving}
-                        className="text-xs px-3 py-2 bg-primary-green text-white rounded-lg hover:bg-green-700 disabled:opacity-50 whitespace-nowrap touch-manipulation"
-                      >
-                        {emailSaving ? 'Saving...' : 'Save'}
-                      </button>
-                      <button
-                        onClick={() => {
-                          setEmailEditMode(false);
-                          setEmailValue(user?.email || '');
-                        }}
-                        className="text-xs px-3 py-2 text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 whitespace-nowrap touch-manipulation"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                </dd>
-              ) : (
-                <dd className="font-medium text-gray-900 flex items-center gap-2">
-                  {user?.email || <span className="text-gray-400 italic">Not set</span>}
-                  <button
-                    onClick={() => setEmailEditMode(true)}
-                    className="text-xs text-primary-green hover:underline touch-manipulation"
-                  >
-                    Edit
-                  </button>
-                </dd>
-              )}
-            </div>
+                  </dd>
+                ) : (
+                  <dd className="font-medium text-gray-900 flex items-center gap-2">
+                    {user?.email || <span className="text-gray-400 italic">Not set</span>}
+                    <button
+                      onClick={() => setEmailEditMode(true)}
+                      className="text-xs text-primary-green hover:underline touch-manipulation"
+                    >
+                      Edit
+                    </button>
+                  </dd>
+                )}
+              </div>
+            )}
           </dl>
           <div className="mt-5 border-t pt-4">
             <LogoutButton />
           </div>
         </div>
       </section>
+
+      {/* ✅ Subscription Plan Section – only for non‑superuser owners (regular shop owners) */}
+      {user?.role === 'OWNER' && !user?.is_superuser && shop && (
+        <section className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+          <div className="p-4 md:p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <CreditCardIcon className="h-5 w-5 text-purple-600" />
+              <h2 className="text-lg font-semibold text-gray-900">Subscription Plan</h2>
+            </div>
+            {loadingSub ? (
+              <p className="text-sm text-gray-500">Loading subscription details...</p>
+            ) : subscription ? (
+              <div className="space-y-2">
+                <div className="flex justify-between items-center border-b pb-2">
+                  <span className="text-gray-600">Current plan:</span>
+                  <span className="font-semibold text-gray-900">{subscription.plan_name}</span>
+                </div>
+                <div className="flex justify-between items-center border-b pb-2">
+                  <span className="text-gray-600">Status:</span>
+                  <span className={`font-medium ${subscription.is_active ? 'text-green-600' : 'text-red-600'}`}>
+                    {subscription.is_active ? 'Active' : 'Expired'}
+                  </span>
+                </div>
+                {subscription.is_trial && (
+                  <div className="flex justify-between items-center border-b pb-2">
+                    <span className="text-gray-600">Trial ends:</span>
+                    <span className="text-gray-900">{new Date(subscription.end_date).toLocaleDateString()}</span>
+                  </div>
+                )}
+                {!subscription.is_trial && (
+                  <div className="flex justify-between items-center border-b pb-2">
+                    <span className="text-gray-600">Expires on:</span>
+                    <span className="text-gray-900">{new Date(subscription.end_date).toLocaleDateString()}</span>
+                  </div>
+                )}
+                <div className="mt-3">
+                  <Link to="/subscription">
+                    <Button variant="secondary" className="w-full touch-manipulation">
+                      Manage Subscription
+                    </Button>
+                  </Link>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-sm text-gray-600">No active subscription. Start a free trial or choose a paid plan.</p>
+                <Link to="/subscription">
+                  <Button className="w-full touch-manipulation">Start Free Trial</Button>
+                </Link>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
 
       {/* User Management – Invite Cashier (Owner only) */}
       {user?.role === 'OWNER' && (
@@ -302,7 +378,6 @@ export default function Settings() {
               <h2 className="text-lg font-semibold text-gray-900">Manage Cashiers</h2>
             </div>
 
-            {/* Search */}
             <div className="mb-4">
               <div className="relative">
                 <MagnifyingGlassIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
@@ -357,7 +432,6 @@ export default function Settings() {
                   ))}
                 </ul>
 
-                {/* Custom Pagination Controls */}
                 {totalCashierPages > 1 && (
                   <div className="mt-4 flex items-center justify-between">
                     <button
@@ -436,7 +510,7 @@ export default function Settings() {
         </div>
       </section>
 
-      {/* Invite Cashier Modal */}
+      {/* Modals */}
       <InviteCashierModal
         isOpen={showInviteModal}
         onClose={() => setShowInviteModal(false)}
@@ -447,7 +521,6 @@ export default function Settings() {
         }}
       />
 
-      {/* Reset Password Result Modal with Copy */}
       <Modal
         isOpen={showResetModal}
         onClose={() => {
@@ -459,40 +532,24 @@ export default function Settings() {
         <div className="space-y-3">
           <p className="text-sm text-gray-600">Share these credentials with the cashier:</p>
           <div className="bg-gray-50 p-3 rounded-lg relative">
-            <p>
-              <strong>Phone:</strong> {resetCredentials?.phone}
-            </p>
-            <p>
-              <strong>New Password:</strong>{' '}
-              <code className="bg-gray-100 px-2 py-1 rounded">{resetCredentials?.newPassword}</code>
-            </p>
+            <p><strong>Phone:</strong> {resetCredentials?.phone}</p>
+            <p><strong>New Password:</strong> <code className="bg-gray-100 px-2 py-1 rounded">{resetCredentials?.newPassword}</code></p>
             <button
               onClick={handleCopyCredentials}
               className="absolute top-2 right-2 p-2 text-gray-500 hover:text-primary transition-colors touch-manipulation"
               aria-label="Copy credentials"
             >
-              {copied ? (
-                <CheckIcon className="w-4 h-4 text-green-600" />
-              ) : (
-                <ClipboardDocumentIcon className="w-4 h-4" />
-              )}
+              {copied ? <CheckIcon className="w-4 h-4 text-green-600" /> : <ClipboardDocumentIcon className="w-4 h-4" />}
             </button>
           </div>
           <div className="flex justify-end">
-            <Button
-              onClick={() => {
-                setShowResetModal(false);
-                setCopied(false);
-              }}
-              className="touch-manipulation"
-            >
+            <Button onClick={() => { setShowResetModal(false); setCopied(false); }} className="touch-manipulation">
               Done
             </Button>
           </div>
         </div>
       </Modal>
 
-      {/* Confirmation modal for deactivate / reactivate */}
       {showToggleConfirm && (
         <ConfirmModal
           title={toggleAction === 'deactivate' ? 'Deactivate Cashier' : 'Reactivate Cashier'}

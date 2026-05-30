@@ -53,6 +53,8 @@ class AuditLog(BaseModel):
             models.Index(fields=['user']),
             models.Index(fields=['created_at']),
             models.Index(fields=['action', 'created_at']),
+            # ✅ Additional composite index for admin analytics queries
+            models.Index(fields=['shop', 'action', 'created_at']),
         ]
 
     def __str__(self):

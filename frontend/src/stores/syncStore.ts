@@ -48,7 +48,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
 
     const saleToStore = { ...sale, synced: sale.synced ?? false, createdAt: sale.createdAt || new Date() };
     await db.sales.add(saleToStore);
-    
+
     if (!saleToStore.synced) {
       set(state => ({ pendingSales: state.pendingSales + 1 }));
     }
@@ -148,7 +148,6 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         return;
       }
 
-      // Process in batches
       let errors = 0;
       for (let i = 0; i < cleanUnsynced.length; i += BATCH_SIZE) {
         const batch = cleanUnsynced.slice(i, i + BATCH_SIZE);
@@ -183,25 +182,22 @@ export const useSyncStore = create<SyncState>((set, get) => ({
           }
           if (result.status === 'success') {
             await db.sales.update(clientId, { synced: true, syncError: null });
-
             const localSale = await db.sales.get(clientId);
             if (localSale?.paymentMethod === 'CREDIT') {
-              const localDebts = await db.creditTransactions
-                .where({ saleId: clientId, type: 'DEBT' })
-                .toArray();
+              const localDebts = await db.creditTransactions.filter(tx => tx.saleId === clientId && tx.type === 'DEBT').toArray();
               for (const debt of localDebts) {
                 await db.creditTransactions.update(debt.id, { synced: true });
               }
             }
           } else {
             await db.sales.update(clientId, {
-              synced: true,
+              synced: false,
               syncError: result.error || 'Unknown error',
             });
             errors++;
             useUIStore.getState().addToast({
-              message: `Sale ${clientId} failed: ${result.error}`,
-              type: 'error',
+              message: `Sale ${clientId} failed: ${result.error} (will retry)`,
+              type: 'warning',
               duration: 10000,
             });
           }

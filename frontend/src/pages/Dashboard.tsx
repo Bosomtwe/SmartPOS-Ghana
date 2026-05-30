@@ -45,7 +45,7 @@ interface DashboardData {
 export default function Dashboard() {
   const { user } = useAuthStore();
   const { products, fetchProducts } = useProductStore();
-  const { fetchSales } = useSalesStore();
+  const { sales, fetchSales, loading: salesLoading } = useSalesStore();
   const { addToast } = useUIStore();
 
   const [data, setData] = useState<DashboardData | null>(null);
@@ -58,9 +58,11 @@ export default function Dashboard() {
   const [startDate, setStartDate] = useState(todayStr);
   const [endDate, setEndDate] = useState(todayStr);
 
+  // Fetch products and sales on mount
   useEffect(() => {
     fetchProducts();
-  }, [fetchProducts]);
+    fetchSales();
+  }, [fetchProducts, fetchSales]);
 
   useEffect(() => {
     const hOnline = () => setIsOnline(true);
@@ -83,38 +85,42 @@ export default function Dashboard() {
           setData(res.data);
           setLastUpdated(new Date());
         } else {
-          await fetchSales();
-          const { sales } = useSalesStore.getState();
+          // Offline: compute from local sales and products
           const filtered = sales.filter(
             (s) => s.status === 'COMPLETED' && isInRange(new Date(s.createdAt), start, end)
           );
-          const total_sales = filtered.reduce((sum, s) => sum + s.totalAmount, 0);
-          const transaction_count = filtered.length;
-          const avg_sale = transaction_count > 0 ? total_sales / transaction_count : 0;
 
-          let profit = 0,
-            missingCostPrice = false;
+          let totalRevenue = 0;
+          let totalCost = 0;
+          let missingCostPrice = false;
           const productSales: Record<string, number> = {};
+
           for (const sale of filtered) {
+            totalRevenue += sale.totalAmount;
             for (const item of sale.items) {
               const prod = products.find((p) => p.id === item.productId);
               if (prod) {
                 productSales[prod.name] = (productSales[prod.name] || 0) + item.quantity;
-                if (prod.costPrice) {
-                  profit += item.quantity * (item.unitPrice - prod.costPrice);
+                if (prod.costPrice != null && !isNaN(prod.costPrice)) {
+                  totalCost += item.quantity * prod.costPrice;
                 } else {
                   missingCostPrice = true;
                 }
               }
             }
           }
+
+          const profit = totalRevenue - totalCost;
+          const transaction_count = filtered.length;
+          const avg_sale = transaction_count > 0 ? totalRevenue / transaction_count : 0;
+
           const top_products = Object.entries(productSales)
             .map(([name, total_sold]) => ({ name, total_sold }))
             .sort((a, b) => b.total_sold - a.total_sold)
             .slice(0, 5);
 
           setData({
-            total_sales,
+            total_sales: totalRevenue,
             profit,
             missing_cost_price: missingCostPrice,
             top_products,
@@ -124,19 +130,25 @@ export default function Dashboard() {
           setLastUpdated(new Date());
         }
       } catch (err: any) {
-        const msg = err.response?.data?.detail || err.message || 'Failed to load dashboard';
-        setError(msg);
-        addToast({ message: 'Could not load dashboard data', type: 'error' });
+        if (!isOnline) {
+          console.warn('Offline, no fresh dashboard data');
+        } else {
+          const msg = err.response?.data?.detail || err.message || 'Failed to load dashboard';
+          setError(msg);
+          addToast({ message: 'Could not load dashboard data', type: 'error' });
+        }
       } finally {
         setLoading(false);
       }
     },
-    [isOnline, fetchSales, products, addToast]
+    [isOnline, sales, products, addToast]
   );
 
   useEffect(() => {
-    loadDashboard(startDate, endDate);
-  }, [loadDashboard, startDate, endDate, isOnline]);
+    if (!salesLoading || sales.length > 0) {
+      loadDashboard(startDate, endDate);
+    }
+  }, [loadDashboard, startDate, endDate, isOnline, salesLoading, sales.length]);
 
   const handleRefresh = () => {
     if (!isOnline) addToast({ message: 'Offline – showing cached data', type: 'info' });
@@ -156,8 +168,8 @@ export default function Dashboard() {
       ? ((data.profit - data.prev_profit) / data.prev_profit) * 100
       : null;
 
-  // Skeleton loading (improved responsive)
-  if (loading) {
+  // Show loading only on first load (no data at all)
+  if (loading && !data) {
     return (
       <div className="p-4 space-y-5 animate-pulse">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -177,7 +189,7 @@ export default function Dashboard() {
     );
   }
 
-  if (error) {
+  if (error && !data) {
     return (
       <div className="p-4">
         <div className="bg-red-50 border border-red-200 text-red-700 px-5 py-4 rounded-2xl flex items-center gap-3">
@@ -198,7 +210,7 @@ export default function Dashboard() {
 
   return (
     <div className="p-3 md:p-5 space-y-5">
-      {/* Header – stacked on mobile */}
+      {/* Header */}
       <div className="flex flex-col gap-3">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Dashboard</h1>
@@ -207,7 +219,6 @@ export default function Dashboard() {
           </p>
         </div>
 
-        {/* Date controls + refresh row – wraps on mobile */}
         <div className="flex flex-col sm:flex-row sm:items-center gap-2">
           <div className="flex flex-wrap items-center gap-2 bg-white rounded-xl border border-gray-200 p-1 shadow-sm">
             <input
@@ -237,10 +248,11 @@ export default function Dashboard() {
           <div className="flex items-center gap-2 self-end sm:self-auto">
             <button
               onClick={handleRefresh}
-              className="p-2 rounded-xl hover:bg-gray-100 text-gray-500 hover:text-green-600 transition touch-manipulation"
+              disabled={loading}
+              className="p-2 rounded-xl hover:bg-gray-100 text-gray-500 hover:text-green-600 transition touch-manipulation disabled:opacity-50 disabled:cursor-not-allowed"
               title={`Last updated: ${lastUpdated?.toLocaleTimeString() || 'never'}`}
             >
-              <ArrowPathIcon className="h-5 w-5" />
+              <ArrowPathIcon className={`h-5 w-5 ${loading ? 'animate-spin' : ''}`} />
             </button>
             {!isOnline && (
               <div className="flex items-center gap-1 bg-yellow-50 text-yellow-700 px-2.5 py-1.5 rounded-xl text-xs font-medium">
@@ -255,9 +267,8 @@ export default function Dashboard() {
         <p className="text-xs text-gray-400 -mt-3">Data as of {lastUpdated.toLocaleTimeString()}</p>
       )}
 
-      {/* KPI Cards – responsive: 1 col on mobile, 2 on small, 4 on large */}
+      {/* KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-        {/* Total Sales */}
         <div className="bg-white p-3 sm:p-4 rounded-2xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow">
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-xs font-medium text-gray-500">Total Sales</span>
@@ -280,14 +291,13 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* Profit (owner only) */}
         {user?.role === 'OWNER' && (
           <div className="bg-white p-3 sm:p-4 rounded-2xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow">
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-xs font-medium text-gray-500">Profit</span>
               <ChartBarIcon className="h-4 w-4 sm:h-5 sm:w-5 text-blue-400" />
             </div>
-            <div className="text-lg sm:text-xl lg:text-2xl font-bold text-gray-900">
+            <div className={`text-lg sm:text-xl lg:text-2xl font-bold ${(data?.profit ?? 0) < 0 ? 'text-red-600' : 'text-gray-900'}`}>
               {fm(data?.profit ?? 0)}
             </div>
             {profitTrend !== null && (
@@ -314,7 +324,6 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Transactions */}
         <div className="bg-white p-3 sm:p-4 rounded-2xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow">
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-xs font-medium text-gray-500">Transactions</span>
@@ -328,7 +337,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Low Stock */}
         <div className="bg-white p-3 sm:p-4 rounded-2xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow">
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-xs font-medium text-gray-500">Low Stock Items</span>
@@ -344,7 +352,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Top Selling Products – improved spacing for mobile */}
+      {/* Top Selling Products */}
       <div className="bg-white p-4 md:p-5 rounded-2xl shadow-sm border border-gray-100">
         <h2 className="text-base sm:text-lg font-semibold text-gray-900 mb-4">🏆 Top Selling Products</h2>
         {topProducts.length > 0 ? (

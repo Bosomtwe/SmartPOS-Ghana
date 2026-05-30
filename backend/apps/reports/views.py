@@ -1,6 +1,8 @@
 from rest_framework import generics, permissions
 from rest_framework.response import Response
-from django.db.models import Sum, Count, Q, F
+from rest_framework.pagination import PageNumberPagination
+from django.db.models import Sum, Count, Q, F, DecimalField
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from datetime import datetime, timedelta
 from apps.products.models import Product
@@ -10,13 +12,28 @@ import csv
 from django.http import HttpResponse
 
 
+# ----- Pagination for JSON sales report -----
+class SalesReportPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+
+# ----- Pagination for top products -----
+class TopProductsPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = 'page_size'
+    max_page_size = 50
+
+
+# ----- Dashboard Overview -----
 class DashboardOverviewView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         shop = request.user.shop
 
-        # ---------- 1. parse date range ----------
+        # parse date range
         start_str = request.query_params.get('start')
         end_str = request.query_params.get('end')
 
@@ -31,7 +48,7 @@ class DashboardOverviewView(generics.GenericAPIView):
         else:
             end = datetime.strptime(end_str, '%Y-%m-%d').date()
 
-        # ---------- 2. base queryset ----------
+        # base queryset
         sales_qs = Sale.objects.filter(
             shop=shop,
             status='COMPLETED',
@@ -39,22 +56,26 @@ class DashboardOverviewView(generics.GenericAPIView):
             created_at__date__lte=end
         )
 
-        # ---------- 3. current period aggregates ----------
+        # aggregates
         total_sales = sales_qs.aggregate(total=Sum('total_amount'))['total'] or 0
         transaction_count = sales_qs.count()
         avg_sale = total_sales / transaction_count if transaction_count else 0
 
-        # profit & missing cost price flag
-        profit = 0
+        # profit
+        cost_of_sales = 0
         missing_cost_price = False
-        for sale in sales_qs:   # for larger data you might use annotate, but fine for typical usage
+        for sale in sales_qs:
             for item in sale.items.all():
                 if item.product and item.product.cost_price is not None:
-                    profit += item.quantity * (item.unit_price - item.product.cost_price)
+                    cost_of_sales += item.quantity * item.product.cost_price
                 else:
                     missing_cost_price = True
+        profit = total_sales - cost_of_sales
 
-        # top products
+        # dynamic top products for dashboard (max 20)
+        total_products = Product.objects.filter(shop=shop, is_active=True).count()
+        top_n = min(20, max(5, total_products // 10)) if total_products > 0 else 5
+
         top_products = (
             SaleItem.objects.filter(
                 sale__shop=shop,
@@ -64,14 +85,14 @@ class DashboardOverviewView(generics.GenericAPIView):
             )
             .values('product__name')
             .annotate(total_sold=Sum('quantity'))
-            .order_by('-total_sold')[:5]
+            .order_by('-total_sold')[:top_n]
         )
         top_products_list = [
             {'name': item['product__name'], 'total_sold': item['total_sold']}
             for item in top_products
         ]
 
-        # ---------- 4. previous period (same length) for trends ----------
+        # previous period (same length)
         delta = (end - start).days
         prev_start = start - timedelta(days=delta + 1)
         prev_end = start - timedelta(days=1)
@@ -84,14 +105,14 @@ class DashboardOverviewView(generics.GenericAPIView):
         )
         prev_total_sales = prev_sales.aggregate(total=Sum('total_amount'))['total'] or 0
 
-        prev_profit = 0
+        prev_cost = 0
         for sale in prev_sales:
             for item in sale.items.all():
                 if item.product and item.product.cost_price is not None:
-                    prev_profit += item.quantity * (item.unit_price - item.product.cost_price)
-                # ignore missing cost for previous period flag
+                    prev_cost += item.quantity * item.product.cost_price
+        prev_profit = prev_total_sales - prev_cost
 
-        # ---------- 5. low stock count ----------
+        # low stock count
         low_stock_count = Product.objects.filter(
             shop=shop,
             current_stock__lte=F('low_stock_threshold'),
@@ -111,11 +132,11 @@ class DashboardOverviewView(generics.GenericAPIView):
         })
 
 
+# ----- CSV Export -----
 class SalesReportExportView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        # Get date range from query params
         start_date = request.query_params.get('start_date')
         end_date = request.query_params.get('end_date')
 
@@ -156,6 +177,70 @@ class SalesReportExportView(generics.GenericAPIView):
         return response
 
 
+# ----- JSON endpoint for paginated sales table -----
+class SalesReportJsonView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = SaleSerializer
+    pagination_class = SalesReportPagination
+
+    def get_queryset(self):
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        qs = Sale.objects.filter(
+            shop=self.request.user.shop,
+            status='COMPLETED'
+        ).select_related('customer').prefetch_related('items__product')
+        if start_date:
+            qs = qs.filter(created_at__date__gte=start_date)
+        if end_date:
+            qs = qs.filter(created_at__date__lte=end_date)
+        return qs.order_by('-created_at')
+
+
+# ----- Paginated Top Selling Products (JSON) -----
+class TopProductsJsonView(generics.GenericAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = TopProductsPagination
+
+    def get(self, request):
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+
+        qs = SaleItem.objects.filter(
+            sale__shop=request.user.shop,
+            sale__status='COMPLETED'
+        )
+        if start_date:
+            qs = qs.filter(sale__created_at__date__gte=start_date)
+        if end_date:
+            qs = qs.filter(sale__created_at__date__lte=end_date)
+
+        # Aggregate by product
+        aggregated = (
+            qs.values('product__id', 'product__name')
+            .annotate(
+                total_quantity=Sum('quantity'),
+                total_revenue=Sum(F('quantity') * F('unit_price'), output_field=DecimalField(max_digits=15, decimal_places=2))
+            )
+            .order_by('-total_quantity')
+        )
+
+        # Apply pagination
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(aggregated, request)
+        results = [
+            {
+                'product_id': item['product__id'],
+                'product_name': item['product__name'],
+                'total_quantity': item['total_quantity'],
+                'total_revenue': float(item['total_revenue']) if item['total_revenue'] else 0,
+            }
+            for item in page
+        ]
+        return paginator.get_paginated_response(results)
+
+
+# ----- Stock Report Export -----
 class StockReportExportView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 

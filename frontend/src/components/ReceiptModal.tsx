@@ -1,8 +1,9 @@
-import { useRef } from 'react';
+import { useRef, useEffect, useState } from 'react';
 import { Modal } from './Modal';
 import { Button } from './Button';
 import { useAuthStore } from '../stores/authStore';
 import { useCustomerStore } from '../stores/customerStore';
+import { useProductStore } from '../stores/productStore';
 import type { Sale } from '../lib/dexie';
 
 interface ReceiptModalProps {
@@ -11,22 +12,67 @@ interface ReceiptModalProps {
   sale: Sale | null;
 }
 
+interface EnrichedItem {
+  productId: string;
+  quantity: number;
+  unitPrice: number;
+  total: number;
+  name: string;
+}
+
 export const ReceiptModal = ({ isOpen, onClose, sale }: ReceiptModalProps) => {
   const { shop, user } = useAuthStore();
   const { customers } = useCustomerStore();
+  const { products } = useProductStore(); // ✅ just use existing products, no fetch
+  const [enrichedItems, setEnrichedItems] = useState<EnrichedItem[]>([]);
 
-  // Ref to hold the printable div so we can clone it into the iframe
   const printRef = useRef<HTMLDivElement>(null);
+
+  // Enrich items with product names whenever sale or products change
+  useEffect(() => {
+    if (!sale) {
+      setEnrichedItems([]);
+      return;
+    }
+
+    const items = sale.items || [];
+    if (items.length === 0) {
+      setEnrichedItems([]);
+      return;
+    }
+
+    // Build a quick lookup map from products array
+    const productMap = new Map();
+    products.forEach(p => productMap.set(p.id, p.name));
+
+    const enriched = items.map((item) => {
+      // If item already has a name (offline sale), use it
+      if (item.name) {
+        return {
+          productId: item.productId,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          total: item.total,
+          name: item.name,
+        };
+      }
+      // Otherwise find product name from the cache
+      const productName = productMap.get(item.productId);
+      return {
+        productId: item.productId,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        total: item.total,
+        name: productName || 'Unknown Product',
+      };
+    });
+    setEnrichedItems(enriched);
+  }, [sale, products]);
 
   if (!sale) return null;
 
-  const enrichedItems = sale.items.map(item => ({
-    ...item,
-    name: item.name || 'Unknown Product',
-  }));
-
   const customer = sale.customerId
-    ? customers.find(c => c.id === sale.customerId)
+    ? customers.find((c) => c.id === sale.customerId)
     : null;
 
   const totalItems = enrichedItems.reduce((sum, item) => sum + item.quantity, 0);
@@ -38,10 +84,7 @@ export const ReceiptModal = ({ isOpen, onClose, sale }: ReceiptModalProps) => {
   const handlePrint = () => {
     if (!printRef.current) return;
 
-    // Clone the receipt content
     const clone = printRef.current.cloneNode(true) as HTMLElement;
-
-    // Create a hidden iframe
     const iframe = document.createElement('iframe');
     iframe.style.position = 'fixed';
     iframe.style.right = '0';
@@ -53,7 +96,6 @@ export const ReceiptModal = ({ isOpen, onClose, sale }: ReceiptModalProps) => {
 
     const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
     if (!iframeDoc) {
-      // fallback – very unlikely
       document.body.removeChild(iframe);
       window.print();
       return;
@@ -102,22 +144,17 @@ export const ReceiptModal = ({ isOpen, onClose, sale }: ReceiptModalProps) => {
     `);
     iframeDoc.close();
 
-    // Wait for iframe to load, then print
     iframe.onload = () => {
       try {
         iframe.contentWindow?.print();
       } catch (e) {
-        // If iframe print fails, try standard print as last resort
         window.print();
       }
-      // Remove the iframe after a short delay (print dialog is open)
       setTimeout(() => {
-        document.body.removeChild(iframe);
+        if (document.body.contains(iframe)) document.body.removeChild(iframe);
       }, 500);
     };
 
-    // Fallback in case onload doesn't fire (already loaded)
-    // We'll also trigger print after a small delay for safety
     setTimeout(() => {
       if (document.body.contains(iframe)) {
         try {

@@ -6,12 +6,23 @@ interface ModalProps {
   onClose: () => void;
   title?: string;
   children: React.ReactNode;
+  closeOnBackdropClick?: boolean;   // ← new prop
 }
 
-export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children }) => {
+export const Modal: React.FC<ModalProps> = ({
+  isOpen,
+  onClose,
+  title,
+  children,
+  closeOnBackdropClick = true,
+}) => {
   return (
     <Transition appear show={isOpen} as={Fragment}>
-      <Dialog as="div" className="relative z-50" onClose={onClose}>
+      <Dialog
+        as="div"
+        className="relative z-50"
+        onClose={closeOnBackdropClick ? onClose : () => {}}
+      >
         <Transition.Child
           as={Fragment}
           enter="ease-out duration-300"

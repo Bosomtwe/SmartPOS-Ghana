@@ -4,6 +4,7 @@ import { useSalesStore } from '../stores/saleStore';
 import { useUIStore } from '../stores/uiStore';
 import { useAuthStore } from '../stores/authStore';
 import { useCustomerStore } from '../stores/customerStore';
+import { useProductStore } from '../stores/productStore'; // ✅ import product store
 import { ReceiptModal } from '../components/ReceiptModal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { PaginationBar } from '../components/PaginationBar';
@@ -21,6 +22,7 @@ export default function SalesHistory() {
   const { user } = useAuthStore();
   const { addToast } = useUIStore();
   const { customers, fetchCustomers } = useCustomerStore();
+  const { fetchProducts } = useProductStore(); // ✅ get product fetch function
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterPayment, setFilterPayment] = useState<string>('ALL');
@@ -29,10 +31,12 @@ export default function SalesHistory() {
   const [voidTarget, setVoidTarget] = useState<string | null>(null);
   const [voiding, setVoiding] = useState(false);
 
+  // ✅ Pre‑fetch products when page loads (so receipts open instantly)
   useEffect(() => {
+    fetchProducts();
     fetchSales();
     fetchCustomers();
-  }, [fetchSales, fetchCustomers]);
+  }, [fetchProducts, fetchSales, fetchCustomers]);
 
   const getCustomerName = (customerId?: string): string => {
     if (!customerId) return '—';
@@ -105,7 +109,7 @@ export default function SalesHistory() {
 
       {!loading && filtered.length > 0 && (
         <>
-          {/* ====== Mobile: card layout ====== */}
+          {/* Mobile: card layout */}
           <div className="md:hidden space-y-3">
             {filtered.map(sale => (
               <div key={sale.id} className="bg-white rounded-xl shadow p-4">
@@ -159,7 +163,6 @@ export default function SalesHistory() {
                   </span>
                 </div>
 
-                {/* Action buttons */}
                 <div className="flex gap-2 mt-3 pt-3 border-t">
                   <button
                     onClick={() => {
@@ -185,7 +188,7 @@ export default function SalesHistory() {
             ))}
           </div>
 
-          {/* ====== Desktop: table view ====== */}
+          {/* Desktop: table view */}
           <div className="hidden md:block bg-white rounded-xl shadow overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">

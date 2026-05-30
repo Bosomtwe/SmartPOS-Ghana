@@ -80,6 +80,8 @@ export const CustomerSelector = ({ onSelect, selectedId }: CustomerSelectorProps
           displayedCustomers.map((c) => {
             const credit = Number(c.totalCredit) || 0;
             const limit = c.creditLimit !== undefined ? Number(c.creditLimit) : null;
+            const isOverLimit = limit !== null && credit > limit;
+            const isNearLimit = !isOverLimit && limit !== null && credit > limit * 0.9;
             return (
               <button
                 key={c.id}
@@ -98,6 +100,16 @@ export const CustomerSelector = ({ onSelect, selectedId }: CustomerSelectorProps
                     {credit > 0 ? `Debt: GHS ${credit.toFixed(2)}` : 'No debt'}
                     {limit ? ` / Limit: GHS ${limit.toFixed(2)}` : ''}
                   </span>
+                  {isOverLimit && (
+                    <span className="px-2 py-0.5 text-xs font-bold rounded-full bg-red-100 text-red-700">
+                      Exceeded
+                    </span>
+                  )}
+                  {isNearLimit && !isOverLimit && (
+                    <span className="px-2 py-0.5 text-xs font-bold rounded-full bg-yellow-100 text-yellow-700">
+                      Near limit
+                    </span>
+                  )}
                   {selectedId === c.id && <div className="w-2 h-2 bg-green-600 rounded-full" />}
                 </div>
               </button>

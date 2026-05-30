@@ -1,3 +1,4 @@
+# apps/users/views.py
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -7,7 +8,7 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from django.contrib.auth.hashers import make_password
 from django.shortcuts import get_object_or_404
-from django.core.paginator import Paginator             # new import
+from django.core.paginator import Paginator
 import random
 import string
 from django.core.mail import send_mail
@@ -15,6 +16,9 @@ from django.conf import settings
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+
+# ✅ Import subscription permission
+from apps.subscriptions.permissions import MaxUsersPermission
 
 
 class RegisterView(generics.CreateAPIView):
@@ -74,8 +78,9 @@ class ShopDetailView(generics.RetrieveUpdateAPIView):
         return self.request.user.shop
 
 
+# ✅ Apply MaxUsersPermission to cashier creation
 class CreateCashierView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, MaxUsersPermission]
 
     def post(self, request):
         shop = request.user.shop
@@ -98,7 +103,6 @@ class CreateCashierView(APIView):
         return Response({'message': 'Cashier created', 'phone': user.phone})
 
 
-# ---------- Updated ListCashiersView with search & pagination ----------
 class ListCashiersView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -108,14 +112,12 @@ class ListCashiersView(APIView):
 
         queryset = User.objects.filter(
             shop=request.user.shop, role='CASHIER'
-        ).order_by('-is_active', 'phone')   # active first, then by phone
+        ).order_by('-is_active', 'phone')
 
-        # Search filter
         search = request.query_params.get('search', '')
         if search:
             queryset = queryset.filter(phone__icontains=search)
 
-        # Pagination
         page = int(request.query_params.get('page', 1))
         page_size = int(request.query_params.get('page_size', 50))
         paginator = Paginator(queryset, page_size)
@@ -126,11 +128,7 @@ class ListCashiersView(APIView):
             'next': page_obj.has_next(),
             'previous': page_obj.has_previous(),
             'results': [
-                {
-                    'id': user.id,
-                    'phone': user.phone,
-                    'is_active': user.is_active,
-                }
+                {'id': user.id, 'phone': user.phone, 'is_active': user.is_active}
                 for user in page_obj.object_list
             ],
         }
@@ -148,9 +146,7 @@ class ResetCashierPasswordView(APIView):
             User, id=user_id, shop=request.user.shop, role='CASHIER'
         )
 
-        new_password = ''.join(
-            random.choices(string.ascii_letters + string.digits, k=8)
-        )
+        new_password = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
         cashier.password = make_password(new_password)
         cashier.save()
 
@@ -161,8 +157,6 @@ class ResetCashierPasswordView(APIView):
             'new_password': new_password
         })
 
-
-# ---------- Forgot & Reset Password (Email) ----------
 
 class ForgotPasswordView(APIView):
     permission_classes = [permissions.AllowAny]
@@ -220,8 +214,6 @@ class ResetPasswordView(APIView):
         user.save()
         return Response({'detail': 'Password has been reset successfully.'})
 
-
-# ---------- NEW: Deactivate / Reactivate Cashier ----------
 
 class DeactivateCashierView(APIView):
     permission_classes = [IsAuthenticated]

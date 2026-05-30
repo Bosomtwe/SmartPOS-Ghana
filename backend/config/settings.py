@@ -14,7 +14,10 @@ import dj_database_url
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()   # loads .env locally; ignored in production
+#load_dotenv() - using in production   # loads .env locally; ignored in production
+if os.environ.get('ENVIRONMENT') != 'production':
+    # You can also check DEBUG: if DEBUG:
+    load_dotenv()   # loads from .env in current directory
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -62,6 +65,7 @@ INSTALLED_APPS = [
     'apps.customers',
     'apps.reports',
     'apps.audit',
+    'apps.subscriptions',
     'apps.analytics',
     'django_filters',
 ]
@@ -77,6 +81,7 @@ MIDDLEWARE = [
     'apps.audit.middleware.AuditMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'apps.subscriptions.middleware.SubscriptionRequiredMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -149,6 +154,7 @@ SIMPLE_JWT = {
 # CORS – allow the frontend domain
 CORS_ALLOWED_ORIGINS = os.environ.get('CORS_ALLOWED_ORIGINS', '').split(',')
 CORS_ALLOWED_ORIGINS = [origin for origin in CORS_ALLOWED_ORIGINS if origin]
+print("CORS_ALLOWED_ORIGINS =", CORS_ALLOWED_ORIGINS)
 CORS_ALLOW_CREDENTIALS = True
 
 CSRF_TRUSTED_ORIGINS = os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',')
@@ -229,6 +235,7 @@ if not all([EMAIL_HOST_USER, EMAIL_HOST_PASSWORD]):
 # ===============================
 #FRONTEND_URL = 'http://localhost:5173'  # Vite dev server
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
+#FRONTEND_URL = "https://desktop-l5blt2r.tail740aa4.ts.net"
 
 # HSTS settings
 SECURE_HSTS_SECONDS = 31536000   # 1 year
@@ -265,3 +272,7 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # Ensure static root directory exists
 os.makedirs(STATIC_ROOT, exist_ok=True)
+
+# Paystack
+PAYSTACK_PUBLIC_KEY = os.environ.get('PAYSTACK_PUBLIC_KEY')
+PAYSTACK_SECRET_KEY = os.environ.get('PAYSTACK_SECRET_KEY')

@@ -11,9 +11,7 @@ const toCamelCase = (product: any): Product => ({
   costPrice: parseFloat(product.cost_price),
   sellingPrice: parseFloat(product.selling_price),
   currentStock: product.current_stock,
-  lowStockThreshold: product.low_stock_threshold != null
-    ? product.low_stock_threshold
-    : 5,
+  lowStockThreshold: product.low_stock_threshold ?? 5,
   isActive: product.is_active,
   shopId: product.shop,
 });
@@ -40,6 +38,15 @@ const shouldSkipOnlineFetch = (): boolean => {
   return true;
 };
 
+const getShopId = async (): Promise<string | null> => {
+  const shop = useAuthStore.getState().shop;
+  if (shop?.id) return shop.id;
+  const stored = localStorage.getItem('shopId');
+  if (stored) return stored;
+  const anyProduct = await db.products.limit(1).first();
+  return anyProduct?.shopId || null;
+};
+
 interface ProductState {
   products: Product[];
   loading: boolean;
@@ -60,37 +67,47 @@ export const useProductStore = create<ProductState>((set, get) => ({
   error: null,
 
   fetchProducts: async () => {
-    set({ loading: true, error: null });
-    const shop = useAuthStore.getState().shop;
-    if (!shop) {
-      set({ loading: false, products: [] });
+    console.log('[productStore] fetchProducts called, online:', navigator.onLine);
+    set({ loading: true, error: null, fullyLoaded: false });
+
+    const shopId = await getShopId();
+    if (!shopId) {
+      console.error('[productStore] No shopId');
+      set({ loading: false, products: [], fullyLoaded: true });
       return;
     }
 
-    // 1. Show cached products for THIS shop only
-    let shopCached: Product[] = [];
-    try {
-      const allCached = await db.products.toArray();
-      shopCached = allCached.filter(p => p.isActive && p.shopId === shop.id);
-      set({ products: shopCached, loading: false, fullyLoaded: true });
-    } catch (e) {
-      console.error('Failed to load cached products', e);
-      set({ loading: false });
+    // 1. Load cached products (filtered)
+    let cached = await db.products.where('shopId').equals(shopId).toArray();
+    if (cached.length === 0) {
+      const all = await db.products.toArray();
+      if (all.length > 0) {
+        console.warn(`[productStore] Filter returned 0, but total products: ${all.length}. Using all.`);
+        cached = all;
+      }
     }
 
-    // 2. Fetch fresh data in the background (if online & not in restore mode)
+    if (cached.length > 0) {
+      console.log(`[productStore] Loaded ${cached.length} products from IndexedDB`);
+      set({ products: cached, loading: false, fullyLoaded: true });
+    } else {
+      set({ products: [], loading: true, fullyLoaded: false });
+    }
+
+    // 2. Background sync if online and not in restore mode
     if (navigator.onLine && !shouldSkipOnlineFetch()) {
       try {
         const response = await api.get('/products/');
         const freshProducts = extractList(response.data).map(toCamelCase);
-        // Ensure only current shop's products are stored (API already returns them)
+        console.log(`[productStore] Synced ${freshProducts.length} products from server`);
         await db.products.bulkPut(freshProducts);
         set({ products: freshProducts, loading: false, fullyLoaded: true });
       } catch (err) {
-        console.error('Background product sync failed', err);
-        // keep the cached shop products
-        set({ loading: false });
+        console.error('[productStore] Background sync failed', err);
+        if (cached.length === 0) set({ loading: false, fullyLoaded: true });
       }
+    } else if (cached.length === 0) {
+      set({ loading: false, fullyLoaded: true });
     }
   },
 
@@ -102,32 +119,28 @@ export const useProductStore = create<ProductState>((set, get) => ({
       const freshProducts = extractList(response.data).map(toCamelCase);
       await db.products.bulkPut(freshProducts);
       set({ products: freshProducts });
+      console.log(`[productStore] Manual sync, ${freshProducts.length} products`);
     } catch (err) {
-      console.error('Product sync failed', err);
+      console.error('[productStore] Sync failed', err);
     }
   },
 
   getProductById: (id) => get().products.find(p => p.id === id),
-
   searchProducts: (query) => {
-    const lowerQuery = query.toLowerCase();
+    const lower = query.toLowerCase();
     return get().products.filter(p =>
-      p.name.toLowerCase().includes(lowerQuery) ||
-      (p.sku && p.sku.toLowerCase().includes(lowerQuery))
+      p.name.toLowerCase().includes(lower) ||
+      (p.sku && p.sku.toLowerCase().includes(lower))
     );
   },
-
   updateProductStock: (productId, delta) => {
     set((state) => ({
-      products: state.products.map((p) =>
+      products: state.products.map(p =>
         p.id === productId ? { ...p, currentStock: Math.max(0, p.currentStock + delta) } : p
       ),
     }));
     const updated = get().products.find(p => p.id === productId);
     if (updated) db.products.put(updated);
   },
-
-  fetchLowStockAlerts: async () => {
-    return get().products.filter(p => p.currentStock <= p.lowStockThreshold && p.isActive);
-  },
+  fetchLowStockAlerts: async () => get().products.filter(p => p.currentStock <= p.lowStockThreshold && p.isActive),
 }));

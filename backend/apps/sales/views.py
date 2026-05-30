@@ -14,6 +14,9 @@ from apps.audit.models import AuditLog
 from apps.audit.utils import log_action
 from decimal import Decimal
 
+# ✅ Import subscription permission
+from apps.subscriptions.permissions import HasSubscriptionFeature
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,7 +29,7 @@ def _create_sale_from_data(*, shop, user, customer_id, total_amount, discount,
     if not items:
         raise serializers.ValidationError("Sale must have at least one item.")
 
-    # Step 1: idempotency check – if sale already exists, return it
+    # Idempotency checks (unchanged)
     if idempotency_key:
         try:
             existing_sale = Sale.objects.get(idempotency_key=idempotency_key, shop=shop)
@@ -44,7 +47,6 @@ def _create_sale_from_data(*, shop, user, customer_id, total_amount, discount,
                 pass
 
     with transaction.atomic():
-        # Step 2: lock products to prevent overselling
         product_ids = [item['product'] for item in items]
         raw_products = Product.objects.select_for_update().filter(
             id__in=product_ids, shop=shop
@@ -58,11 +60,9 @@ def _create_sale_from_data(*, shop, user, customer_id, total_amount, discount,
         for item in items:
             product = products[item['product']]
             if product.current_stock < item['quantity']:
-                raise serializers.ValidationError(
-                    f"Insufficient stock for {product.name}"
-                )
+                raise serializers.ValidationError(f"Insufficient stock for {product.name}")
 
-        # Step 3: credit validation
+        # Credit validation (backend still enforces, but frontend will also be gated)
         if payment_method == 'CREDIT' and customer_id:
             from apps.customers.models import Customer
             try:
@@ -79,7 +79,6 @@ def _create_sale_from_data(*, shop, user, customer_id, total_amount, discount,
                         f"(limit: {customer.credit_limit})"
                     )
 
-        # Step 4: create sale (handle idempotency again via DB constraint)
         kwargs = dict(
             shop=shop,
             user=user,
@@ -98,11 +97,9 @@ def _create_sale_from_data(*, shop, user, customer_id, total_amount, discount,
             else:
                 sale = Sale.objects.create(**kwargs)
         except IntegrityError:
-            # Another request created the same idempotency key concurrently
             sale = Sale.objects.get(idempotency_key=idempotency_key, shop=shop)
             return sale
 
-        # Step 5: create sale items and inventory transactions
         sale_items = []
         inventory_transactions = []
 
@@ -137,10 +134,8 @@ def _create_sale_from_data(*, shop, user, customer_id, total_amount, discount,
         InventoryTransaction.objects.bulk_create(inventory_transactions)
         Product.objects.bulk_update(products.values(), ['current_stock'])
 
-        # Clear the product list cache for this shop so POS picks up new stock
         cache.delete(f'product_list_{shop.id}')
 
-        # Step 6: credit transaction if needed
         if sale.payment_method == 'CREDIT' and sale.customer:
             from apps.customers.models import CreditTransaction
             try:
@@ -154,13 +149,11 @@ def _create_sale_from_data(*, shop, user, customer_id, total_amount, discount,
                     idempotency_key=idempotency_key
                 )
             except IntegrityError:
-                # duplicate transaction already exists, ignore
                 pass
             else:
                 sale.customer.total_credit += sale.total_amount
                 sale.customer.save()
 
-        # Step 7: audit log
         log_action(
             shop=shop,
             user=user,
@@ -177,9 +170,11 @@ def _create_sale_from_data(*, shop, user, customer_id, total_amount, discount,
         return sale
 
 
+# ✅ Apply subscription feature gating for credit sales
 class SaleCreateView(generics.CreateAPIView):
     serializer_class = SaleSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasSubscriptionFeature]
+    subscription_feature = 'allow_credit_sales'
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -295,7 +290,6 @@ class SaleVoidView(generics.GenericAPIView):
                 request=request
             )
 
-            # Clear product list cache after void (stock returned)
             cache.delete(f'product_list_{request.user.shop.id}')
 
         return Response({'status': 'voided'})

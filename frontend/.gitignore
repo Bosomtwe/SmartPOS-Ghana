@@ -12,6 +12,8 @@ dist
 dist-ssr
 *.local
 .env
+.env.local
+.env.production
 staticfiles/
 node_modules/
 dist/

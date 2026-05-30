@@ -1,9 +1,9 @@
 // src/components/MoreMenu.tsx
 import { Fragment } from 'react';
 import { Dialog, Transition } from '@headlessui/react';
-import { XMarkIcon, ClipboardDocumentListIcon, ChartBarIcon, Cog6ToothIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, ClipboardDocumentListIcon, ChartBarIcon, Cog6ToothIcon, CreditCardIcon } from '@heroicons/react/24/outline';
 import { Link } from 'react-router-dom';
-import { useAuthStore } from '../stores/authStore';   // ✅ added
+import { useAuthStore } from '../stores/authStore';
 
 interface MoreMenuProps {
   isOpen: boolean;
@@ -11,12 +11,11 @@ interface MoreMenuProps {
 }
 
 export const MoreMenu = ({ isOpen, onClose }: MoreMenuProps) => {
-  const { user } = useAuthStore();   // ✅ added
+  const { user } = useAuthStore();
 
   const menuItems = [
     { name: 'Sales History', path: '/sales', icon: ClipboardDocumentListIcon },
-    // Reports – hidden until ready to implement
-    // { name: 'Reports', path: '/reports', icon: ChartBarIcon },
+    { name: 'Reports', path: '/reports', icon: ChartBarIcon },          // ✅ Reports link
     { name: 'Settings', path: '/settings', icon: Cog6ToothIcon },
   ];
 
@@ -68,7 +67,6 @@ export const MoreMenu = ({ isOpen, onClose }: MoreMenuProps) => {
                     </Link>
                   ))}
 
-                  {/* ✅ Analytics link – only for superusers */}
                   {user?.is_superuser && (
                     <Link
                       to="/analytics"
@@ -77,6 +75,17 @@ export const MoreMenu = ({ isOpen, onClose }: MoreMenuProps) => {
                     >
                       <ChartBarIcon className="w-6 h-6 text-gray-500" />
                       <span className="text-base font-medium text-gray-700">Analytics</span>
+                    </Link>
+                  )}
+
+                  {user?.is_superuser && (
+                    <Link
+                      to="/admin/subscriptions"
+                      onClick={onClose}
+                      className="flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-gray-50 transition-colors"
+                    >
+                      <CreditCardIcon className="w-6 h-6 text-gray-500" />
+                      <span className="text-base font-medium text-gray-700">Manage Subscriptions</span>
                     </Link>
                   )}
                 </div>

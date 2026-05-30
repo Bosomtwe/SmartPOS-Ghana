@@ -1,3 +1,4 @@
+# apps/sales/serializers.py
 from rest_framework import serializers
 from .models import Sale, SaleItem
 from apps.products.serializers import ProductSerializer
@@ -16,18 +17,19 @@ class SaleSerializer(serializers.ModelSerializer):
     balance = serializers.SerializerMethodField()
     momo_number = serializers.CharField(
         max_length=20, allow_blank=True, allow_null=True, default=''
-    )  # ← Accept null and convert to ''
+    )
+    # ✅ Add customer name and ID for frontend display
+    customer_name = serializers.CharField(source='customer.name', read_only=True, default='Guest')
+    customer_id = serializers.UUIDField(source='customer.id', read_only=True, allow_null=True)
 
     class Meta:
         model = Sale
         fields = (
-            'id', 'user', 'customer', 'total_amount', 'discount',
-            'payment_method', 'momo_number',
-            'status', 'void_reason', 'created_at',
-            'items', 'total_paid', 'balance',
-            'idempotency_key'
+            'id', 'user', 'customer', 'customer_id', 'customer_name', 'total_amount', 'discount',
+            'payment_method', 'momo_number', 'status', 'void_reason', 'created_at',
+            'items', 'total_paid', 'balance', 'idempotency_key'
         )
-        read_only_fields = ('user', 'status', 'total_paid', 'balance', 'idempotency_key')
+        read_only_fields = ('user', 'status', 'total_paid', 'balance', 'idempotency_key', 'customer_name', 'customer_id')
 
     def get_total_paid(self, obj):
         return getattr(obj, 'total_paid', 0) or 0
@@ -37,7 +39,6 @@ class SaleSerializer(serializers.ModelSerializer):
         return obj.total_amount - paid
 
     def validate_momo_number(self, value):
-        # If None is sent, replace with empty string
         if value is None:
             return ''
         return value

@@ -14,6 +14,8 @@ class UserManager(BaseUserManager):
     def create_superuser(self, phone, password=None, **extra_fields):
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
+        # ✅ Force role = OWNER for any superuser
+        extra_fields.setdefault('role', 'OWNER')
         return self.create_user(phone, password, **extra_fields)
 
 
@@ -36,8 +38,6 @@ class User(AbstractUser, BaseModel):
     shop = models.ForeignKey(Shop, on_delete=models.CASCADE, related_name='users', null=True, blank=True)
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='CASHIER')
     is_active = models.BooleanField(default=True)
-
-    # ⬇️ NEW FIELD – used for password reset (optional)
     email = models.EmailField(blank=True, null=True, unique=True)
 
     objects = UserManager()

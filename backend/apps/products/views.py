@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from django.db import transaction
 from django.db import models
 from django.db.utils import IntegrityError
-from django.core.cache import cache                     # ✅ added
+from django.core.cache import cache
 from .models import Product, InventoryTransaction
 from .serializers import ProductSerializer, InventoryTransactionSerializer
 from ..core.permissions import IsOwnerOrCashierReadOnly
@@ -15,12 +15,16 @@ import csv
 from django.http import HttpResponse
 from apps.audit.utils import log_action
 
+# ✅ Import subscription permissions
+from apps.subscriptions.permissions import MaxProductsPermission, HasSubscriptionFeature
+
 logger = logging.getLogger(__name__)
 
 
+# ✅ Apply MaxProductsPermission to product creation
 class ProductListCreateView(generics.ListCreateAPIView):
     serializer_class = ProductSerializer
-    permission_classes = [permissions.IsAuthenticated, IsOwnerOrCashierReadOnly]
+    permission_classes = [permissions.IsAuthenticated, IsOwnerOrCashierReadOnly, MaxProductsPermission]
     filter_backends = [filters.SearchFilter]
     search_fields = ['name', 'sku']
     pagination_class = None
@@ -31,15 +35,13 @@ class ProductListCreateView(generics.ListCreateAPIView):
         products = cache.get(cache_key)
 
         if products is None:
-            # Cache miss – query DB and store the list
             products = list(Product.objects.filter(shop=shop, is_active=True))
-            cache.set(cache_key, products, 60 * 5)  # cache for 5 minutes
+            cache.set(cache_key, products, 60 * 5)
 
         return products
 
     def perform_create(self, serializer):
         instance = serializer.save(shop=self.request.user.shop)
-        # Invalidate the product list cache for this shop
         cache.delete(f'product_list_{self.request.user.shop.id}')
 
 
@@ -51,10 +53,8 @@ class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
         return Product.objects.filter(shop=self.request.user.shop)
 
     def partial_update(self, request, *args, **kwargs):
-        """Handle IntegrityError (duplicate SKU) gracefully."""
         try:
             response = super().partial_update(request, *args, **kwargs)
-            # Invalidate the cache after a successful update
             cache.delete(f'product_list_{self.request.user.shop.id}')
             return response
         except IntegrityError as e:
@@ -66,7 +66,6 @@ class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
             raise
 
     def update(self, request, *args, **kwargs):
-        """Also handle IntegrityError for PUT requests."""
         try:
             response = super().update(request, *args, **kwargs)
             cache.delete(f'product_list_{self.request.user.shop.id}')
@@ -82,7 +81,6 @@ class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
     def perform_destroy(self, instance):
         instance.is_active = False
         instance.save()
-        # Invalidate cache so the (now inactive) product disappears
         cache.delete(f'product_list_{instance.shop_id}')
 
 
@@ -125,19 +123,30 @@ class StockAdjustView(generics.GenericAPIView):
                 request=request
             )
 
-        # Invalidate the product list cache because stock changed
         cache.delete(f'product_list_{request.user.shop.id}')
         return Response(ProductSerializer(product).data)
 
 
+# ✅ Apply HasSubscriptionFeature to bulk import (only allowed if plan permits)
 class BulkImportView(generics.GenericAPIView):
     parser_classes = [MultiPartParser]
-    permission_classes = [permissions.IsAuthenticated, IsOwnerOrCashierReadOnly]
+    permission_classes = [permissions.IsAuthenticated, IsOwnerOrCashierReadOnly, HasSubscriptionFeature]
+    subscription_feature = 'allow_bulk_import'
 
     def post(self, request):
         file = request.FILES.get('file')
         if not file:
             return Response({'error': 'No file provided'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Also check product limit before importing
+        shop = request.user.shop
+        current_product_count = Product.objects.filter(shop=shop, is_active=True).count()
+        plan = shop.subscription.plan if hasattr(shop, 'subscription') else None
+        if plan and current_product_count >= plan.max_products:
+            return Response(
+                {'error': f'Product limit reached. Your plan allows only {plan.max_products} products.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         try:
             if file.name.endswith('.csv'):
@@ -169,28 +178,28 @@ class BulkImportView(generics.GenericAPIView):
         errors = []
         created = 0
         updated = 0
+        max_products_allowed = plan.max_products if plan else float('inf')
 
         for idx, row in df.iterrows():
+            # Stop if we reach the product limit
+            if created + updated >= max_products_allowed:
+                errors.append(f"Row {idx+2}: Import stopped – product limit reached.")
+                break
+
             try:
                 sku_val = row.get('sku', '')
-                if sku_val and str(sku_val).strip():
-                    sku = str(sku_val).strip()
-                else:
-                    sku = None
+                sku = str(sku_val).strip() if sku_val and str(sku_val).strip() else None
 
                 product = None
-                if sku is not None:
-                    product = Product.objects.filter(shop=request.user.shop, sku=sku).first()
+                if sku:
+                    product = Product.objects.filter(shop=shop, sku=sku).first()
 
                 cost_price = float(row['cost_price'].replace(',', ''))
                 selling_price = float(row['selling_price'].replace(',', ''))
                 current_stock = int(float(row['current_stock'].replace(',', '')))
 
                 low_stock_val = row.get('low_stock_threshold', '')
-                if not low_stock_val or str(low_stock_val).strip() == '':
-                    low_stock_threshold = 5
-                else:
-                    low_stock_threshold = int(float(str(low_stock_val).replace(',', '')))
+                low_stock_threshold = int(float(str(low_stock_val).replace(',', ''))) if low_stock_val and str(low_stock_val).strip() else 5
 
                 data = {
                     'name': str(row['name']).strip(),
@@ -208,14 +217,13 @@ class BulkImportView(generics.GenericAPIView):
                     product.save()
                     updated += 1
                 else:
-                    Product.objects.create(shop=request.user.shop, **data)
+                    Product.objects.create(shop=shop, **data)
                     created += 1
 
             except Exception as e:
                 errors.append(f"Row {idx+2}: {str(e)}")
 
-        # Invalidate cache after bulk import
-        cache.delete(f'product_list_{request.user.shop.id}')
+        cache.delete(f'product_list_{shop.id}')
 
         return Response({
             'created': created,

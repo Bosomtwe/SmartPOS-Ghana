@@ -28,6 +28,15 @@ const toCamelSale = (raw: any): Sale => ({
   idempotencyKey: '',
 });
 
+const getShopId = async (): Promise<string | null> => {
+  const shop = useAuthStore.getState().shop;
+  if (shop?.id) return shop.id;
+  const stored = localStorage.getItem('shopId');
+  if (stored) return stored;
+  const anySale = await db.sales.limit(1).first();
+  return anySale?.shopId || null;
+};
+
 interface SalesState {
   sales: Sale[];
   loading: boolean;
@@ -37,7 +46,6 @@ interface SalesState {
   totalCount: number;
   currentPage: number;
   pageSize: number;
-
   fetchSales: (startDate?: Date, endDate?: Date, page?: number) => Promise<void>;
   fetchNextPage: () => Promise<void>;
   fetchPreviousPage: () => Promise<void>;
@@ -58,23 +66,31 @@ export const useSalesStore = create<SalesState>((set, get) => ({
 
   fetchSales: async (startDate, endDate, page = 1) => {
     set({ loading: true, error: null });
-    const shop = useAuthStore.getState().shop;
-    if (!shop) {
+
+    const shopId = await getShopId();
+    if (!shopId) {
       set({ loading: false, sales: [] });
       return;
     }
 
-    try {
-      if (navigator.onLine) {
-        const params: any = {
-          page_size: get().pageSize,
-          page: page,
-        };
+    // Load cached sales (filtered)
+    let cached = await db.sales.where('shopId').equals(shopId).toArray();
+    if (cached.length === 0) {
+      cached = await db.sales.toArray();
+    }
+    console.log(`[saleStore] Loaded ${cached.length} sales from IndexedDB`);
+    set({ sales: cached, loading: false, totalCount: cached.length });
+
+    // Fetch from server if online
+    if (navigator.onLine) {
+      try {
+        const params: any = { page_size: get().pageSize, page };
         if (startDate) params.start = startDate.toISOString().split('T')[0];
         if (endDate) params.end = endDate.toISOString().split('T')[0];
 
         const response = await api.get('/sales/list/', { params });
         const salesData = response.data.results.map(toCamelSale);
+        console.log(`[saleStore] Fetched ${salesData.length} sales from server`);
         await db.sales.bulkPut(salesData);
         set({
           sales: salesData,
@@ -84,21 +100,10 @@ export const useSalesStore = create<SalesState>((set, get) => ({
           totalCount: response.data.count,
           currentPage: page,
         });
-      } else {
-        // Offline: show only sales from this shop
-        const allLocal = await db.sales.toArray();
-        const shopSales = allLocal.filter(s => s.shopId === shop.id);
-        set({
-          sales: shopSales,
-          loading: false,
-          nextPageUrl: null,
-          previousPageUrl: null,
-          totalCount: shopSales.length,
-          currentPage: 1,
-        });
+      } catch (err: any) {
+        console.error('[saleStore] Failed to fetch from server', err);
+        set({ error: err.message, loading: false });
       }
-    } catch (err: any) {
-      set({ error: err.message, loading: false });
     }
   },
 

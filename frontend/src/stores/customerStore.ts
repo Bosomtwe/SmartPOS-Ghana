@@ -7,20 +7,6 @@ import { useUIStore } from './uiStore';
 import { useSalesStore } from './saleStore';
 import type { Sale } from '../lib/dexie';
 
-interface CustomerState {
-  customers: Customer[];
-  loading: boolean;
-  error: string | null;
-  manuallySyncing: boolean;
-  fetchCustomers: () => Promise<void>;
-  createCustomer: (data: Partial<Customer>) => Promise<void>;
-  updateCustomer: (id: string, data: Partial<Customer>) => Promise<void>;
-  deleteCustomer: (id: string) => Promise<void>;
-  recordPayment: (customerId: string, amount: number, note?: string, saleId?: string) => Promise<any>;
-  syncCreditPayments: () => Promise<void>;
-  refreshLocalBalances: () => Promise<void>;
-}
-
 const parseCustomerFromApi = (raw: any): Customer => ({
   id: raw.id,
   name: raw.name,
@@ -54,6 +40,29 @@ const toCamelSale = (raw: any): Sale => ({
   idempotencyKey: '',
 });
 
+const getShopId = async (): Promise<string | null> => {
+  const shop = useAuthStore.getState().shop;
+  if (shop?.id) return shop.id;
+  const stored = localStorage.getItem('shopId');
+  if (stored) return stored;
+  const anyCustomer = await db.customers.limit(1).first();
+  return anyCustomer?.shopId || null;
+};
+
+interface CustomerState {
+  customers: Customer[];
+  loading: boolean;
+  error: string | null;
+  manuallySyncing: boolean;
+  fetchCustomers: () => Promise<void>;
+  createCustomer: (data: Partial<Customer>) => Promise<void>;
+  updateCustomer: (id: string, data: Partial<Customer>) => Promise<void>;
+  deleteCustomer: (id: string) => Promise<void>;
+  recordPayment: (customerId: string, amount: number, note?: string, saleId?: string) => Promise<any>;
+  syncCreditPayments: () => Promise<void>;
+  refreshLocalBalances: () => Promise<void>;
+}
+
 export const useCustomerStore = create<CustomerState>((set, get) => ({
   customers: [],
   loading: false,
@@ -61,49 +70,47 @@ export const useCustomerStore = create<CustomerState>((set, get) => ({
   manuallySyncing: false,
 
   fetchCustomers: async () => {
+    console.log('[customerStore] fetchCustomers called, online:', navigator.onLine);
     set({ loading: true, error: null });
-    const shop = useAuthStore.getState().shop;
-    if (!shop) {
+
+    const shopId = await getShopId();
+    if (!shopId) {
+      console.error('[customerStore] No shopId, returning empty');
       set({ loading: false, customers: [] });
       return;
     }
 
-    try {
-      // 1. Show cached customers for current shop
-      const allCached = await db.customers.toArray();
-      const shopCached = allCached.filter(c => c.shopId === shop.id);
-      set({ customers: shopCached, loading: false });
+    // Load cached customers (filtered)
+    let cached = await db.customers.where('shopId').equals(shopId).toArray();
+    if (cached.length === 0) {
+      const all = await db.customers.toArray();
+      if (all.length > 0) {
+        console.warn(`[customerStore] Filter returned 0, but total customers: ${all.length}. Using all.`);
+        cached = all;
+      }
+    }
 
-      // 2. Fetch fresh data from server if online and not in restore mode
-      if (navigator.onLine && localStorage.getItem('skipNextOnlineFetch') !== 'true') {
-        const allTxs = await db.creditTransactions.toArray();
-        const hasUnsynced = allTxs.some(tx => !tx.synced);
+    if (cached.length > 0) {
+      console.log(`[customerStore] Loaded ${cached.length} customers from IndexedDB`);
+      set({ customers: cached, loading: false });
+    } else {
+      set({ customers: [], loading: true });
+    }
+
+    // Sync online if possible
+    if (navigator.onLine && localStorage.getItem('skipNextOnlineFetch') !== 'true') {
+      try {
         const response = await api.get('/customers/');
-        const parsed: Customer[] = response.data.map(parseCustomerFromApi);
-
-        if (!hasUnsynced) {
-          await db.customers.bulkPut(parsed);
-          set({ customers: parsed, loading: false });
-        } else {
-          // Merge local balances with fresh server list to preserve unsynced payments
-          const merged = parsed.map((customer) => {
-            const local = shopCached.find(c => c.id === customer.id);
-            if (local && local.totalCredit !== customer.totalCredit) {
-              return { ...customer, totalCredit: local.totalCredit };
-            }
-            return customer;
-          });
-          await db.customers.bulkPut(merged);
-          set({ customers: merged, loading: false });
-        }
+        const fresh = response.data.map(parseCustomerFromApi);
+        console.log(`[customerStore] Synced ${fresh.length} customers from server`);
+        await db.customers.bulkPut(fresh);
+        set({ customers: fresh, loading: false });
+      } catch (err) {
+        console.error('[customerStore] Background sync failed', err);
+        if (cached.length === 0) set({ loading: false });
       }
-    } catch (err: any) {
-      const current = get().customers;
-      if (current.length === 0) {
-        set({ error: err.message || 'Failed to load customers', loading: false });
-      } else {
-        set({ loading: false });
-      }
+    } else if (cached.length === 0) {
+      set({ loading: false });
     }
   },
 
@@ -157,21 +164,16 @@ export const useCustomerStore = create<CustomerState>((set, get) => ({
   },
 
   deleteCustomer: async (id) => {
-    if (navigator.onLine) {
-      await api.delete(`/customers/${id}/`);
-    }
+    if (navigator.onLine) await api.delete(`/customers/${id}/`);
     await db.customers.delete(id);
-    set((state) => ({
-      customers: state.customers.filter((c) => c.id !== id),
-    }));
+    set((state) => ({ customers: state.customers.filter((c) => c.id !== id) }));
   },
 
   recordPayment: async (customerId, amount, note, saleId) => {
-    // ... (unchanged, already correct) ...
+    console.log('[customerStore] recordPayment called, online:', navigator.onLine);
     set({ manuallySyncing: true });
-
-    const timestamp = new Date();
     const localTxId = crypto.randomUUID();
+    const timestamp = new Date();
 
     const tx: CreditTransaction = {
       id: localTxId,
@@ -207,28 +209,18 @@ export const useCustomerStore = create<CustomerState>((set, get) => ({
     }
 
     try {
-      const payload: any = {
-        amount,
-        note,
-        idempotency_key: localTxId,
-      };
+      const payload: any = { amount, note, idempotency_key: localTxId };
       if (saleId) payload.sale_id = saleId;
-
       const response = await api.post(`/customers/${customerId}/record_payment/`, payload);
       const newBalance = response.data.new_balance;
 
-      await db.creditTransactions.update(localTxId, {
-        synced: true,
-        balanceAfter: newBalance,
-      });
-
+      await db.creditTransactions.update(localTxId, { synced: true, balanceAfter: newBalance });
       set((state) => ({
         customers: state.customers.map((c) =>
           c.id === customerId ? { ...c, totalCredit: newBalance } : c
         ),
       }));
       await db.customers.update(customerId, { totalCredit: newBalance });
-
       useSalesStore.getState().fetchSales().catch(console.error);
 
       if (saleId) {
@@ -253,12 +245,12 @@ export const useCustomerStore = create<CustomerState>((set, get) => ({
       return response.data;
     } catch (err: any) {
       const newBalance = Math.max(0, customer.totalCredit - amount);
-      const updated = get().customers.map((c) =>
-        c.id === customerId ? { ...c, totalCredit: newBalance } : c
-      );
-      set({ customers: updated, manuallySyncing: false });
+      set((state) => ({
+        customers: state.customers.map((c) =>
+          c.id === customerId ? { ...c, totalCredit: newBalance } : c
+        ),
+      }));
       await db.customers.update(customerId, { totalCredit: newBalance });
-
       useUIStore.getState().addToast({
         message: `Payment recorded locally (sync failed: ${err.message})`,
         type: 'warning',
@@ -270,38 +262,21 @@ export const useCustomerStore = create<CustomerState>((set, get) => ({
   },
 
   syncCreditPayments: async () => {
-    // ... (unchanged, keep existing implementation) ...
     if (!navigator.onLine) return;
     if (get().manuallySyncing) return;
-
-    const allTxs = await db.creditTransactions.toArray();
-    const unsynced = allTxs.filter((tx) => !tx.synced && tx.type === 'PAYMENT');
-
-    if (unsynced.length === 0) return;
-
+    const unsynced = await db.creditTransactions.filter(tx => !tx.synced && tx.type === 'PAYMENT').toArray();
+    console.log(`[customerStore] Found ${unsynced.length} unsynced payments`);
     let success = 0;
     for (const tx of unsynced) {
       try {
         const absAmount = Math.abs(tx.amount);
-        const payload: any = {
-          amount: absAmount,
-          note: tx.note,
-          idempotency_key: tx.id,
-        };
+        const payload: any = { amount: absAmount, note: tx.note, idempotency_key: tx.id };
         if (tx.saleId) payload.sale_id = tx.saleId;
-
-        const response = await api.post(
-          `/customers/${tx.customerId}/record_payment/`,
-          payload
-        );
-
+        const response = await api.post(`/customers/${tx.customerId}/record_payment/`, payload);
         const newBalance = response.data.new_balance;
-        await db.creditTransactions.update(tx.id, {
-          synced: true,
-          balanceAfter: newBalance,
-        });
+        await db.creditTransactions.update(tx.id, { synced: true, balanceAfter: newBalance });
         set((state) => ({
-          customers: state.customers.map((c) =>
+          customers: state.customers.map(c =>
             c.id === tx.customerId ? { ...c, totalCredit: newBalance } : c
           ),
         }));
@@ -311,24 +286,9 @@ export const useCustomerStore = create<CustomerState>((set, get) => ({
         console.error(`Failed to sync payment ${tx.id}`, err);
       }
     }
-
-    try {
-      useSalesStore.getState().fetchSales().catch(console.error);
-    } catch (e) {
-      console.error('Failed to refresh sales after syncing payments', e);
-    }
-
     if (success > 0) {
-      useUIStore.getState().addToast({
-        message: `${success} payment(s) synced`,
-        type: 'success',
-      });
-    }
-    if (success < unsynced.length) {
-      useUIStore.getState().addToast({
-        message: `${unsynced.length - success} payment(s) failed, will retry later`,
-        type: 'error',
-      });
+      useUIStore.getState().addToast({ message: `${success} payment(s) synced`, type: 'success' });
+      useSalesStore.getState().fetchSales().catch(console.error);
     }
   },
 
@@ -336,9 +296,10 @@ export const useCustomerStore = create<CustomerState>((set, get) => ({
     if (!navigator.onLine) return;
     try {
       const response = await api.get('/customers/');
-      const fresh: Customer[] = response.data.map(parseCustomerFromApi);
+      const fresh = response.data.map(parseCustomerFromApi);
       await db.customers.bulkPut(fresh);
       set({ customers: fresh });
+      console.log(`[customerStore] Refreshed balances, ${fresh.length} customers`);
     } catch (err) {
       console.error('Failed to refresh balances', err);
     }

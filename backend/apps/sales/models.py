@@ -19,9 +19,23 @@ class Sale(BaseModel):
     def __str__(self):
         return f"Sale {self.id}"
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['shop', 'created_at']),
+            models.Index(fields=['shop', 'status']),
+            models.Index(fields=['customer']),
+        ]
+
+
 class SaleItem(BaseModel):
     sale = models.ForeignKey(Sale, on_delete=models.CASCADE, related_name='items')
     product = models.ForeignKey(Product, on_delete=models.SET_NULL, null=True)
     quantity = models.IntegerField()
     unit_price = models.DecimalField(max_digits=10, decimal_places=2)
     total = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['sale']),
+            models.Index(fields=['product']),
+        ]

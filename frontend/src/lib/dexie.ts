@@ -49,7 +49,7 @@ export interface SaleItem {
   quantity: number;
   unitPrice: number;
   total: number;
-  name?: string;                 // ✅ added for receipt enrichment
+  name?: string;
 }
 
 export interface CreditTransaction {
@@ -64,16 +64,40 @@ export interface CreditTransaction {
   synced: boolean;
 }
 
+// New subscription interfaces
+export interface SubscriptionPlan {
+  id: string;
+  name: string;
+  duration_days: number;
+  price: number;
+  max_users: number;
+  max_products: number;
+  allow_credit_sales: boolean;
+  allow_bulk_import: boolean;
+  allow_audit_logs: boolean;
+  allow_analytics: boolean;
+}
+
+export interface CachedSubscription {
+  id: string;
+  plan_name: string;
+  end_date: string;
+  is_active: boolean;
+  is_trial: boolean;
+}
+
 export class SmartPosDB extends Dexie {
   products!: Table<Product>;
   customers!: Table<Customer>;
   sales!: Table<Sale>;
   creditTransactions!: Table<CreditTransaction>;
+  subscriptionPlans!: Table<SubscriptionPlan>;
+  currentSubscription!: Table<CachedSubscription>;
 
   constructor() {
     super('SmartPosDB');
 
-    // Version 1 – initial schema (kept as is, just for reference)
+    // Version 1
     this.version(1).stores({
       products: 'id, name, sku, sellingPrice, currentStock, shopId, isActive',
       customers: 'id, name, phone, shopId',
@@ -85,44 +109,33 @@ export class SmartPosDB extends Dexie {
     this.version(2).upgrade(async (tx) => {
       const salesTable = tx.table('sales');
       await salesTable.toCollection().modify((sale) => {
-        if (sale.synced === undefined || sale.synced === null) {
-          sale.synced = false;
-        }
-        if (sale.syncError === undefined) {
-          sale.syncError = null;
-        }
-        if (sale.idempotencyKey === undefined) {
-          sale.idempotencyKey = '';
-        }
+        if (sale.synced === undefined || sale.synced === null) sale.synced = false;
+        if (sale.syncError === undefined) sale.syncError = null;
+        if (sale.idempotencyKey === undefined) sale.idempotencyKey = '';
       });
     });
 
-    // Version 3 – adds saleId index AND the compound index [saleId+type]
+    // Version 3 – adds saleId index and compound index [saleId+type]
     this.version(3).stores({
       creditTransactions: 'id, customerId, saleId, createdAt, synced, [saleId+type]',
     });
 
-    // Version 4 – normalise missing product fields (lowStockThreshold, isActive, etc.)
+    // Version 4 – normalise missing product fields
     this.version(4).upgrade(async (tx) => {
       const productsTable = tx.table('products');
       await productsTable.toCollection().modify((product) => {
-        if (product.lowStockThreshold === undefined || product.lowStockThreshold === null) {
-          product.lowStockThreshold = 5;
-        }
-        if (product.isActive === undefined || product.isActive === null) {
-          product.isActive = true;
-        }
-        // Ensure numeric stock and prices
-        if (typeof product.currentStock !== 'number') {
-          product.currentStock = Number(product.currentStock) || 0;
-        }
-        if (typeof product.costPrice !== 'number') {
-          product.costPrice = Number(product.costPrice) || 0;
-        }
-        if (typeof product.sellingPrice !== 'number') {
-          product.sellingPrice = Number(product.sellingPrice) || 0;
-        }
+        if (product.lowStockThreshold === undefined || product.lowStockThreshold === null) product.lowStockThreshold = 5;
+        if (product.isActive === undefined || product.isActive === null) product.isActive = true;
+        if (typeof product.currentStock !== 'number') product.currentStock = Number(product.currentStock) || 0;
+        if (typeof product.costPrice !== 'number') product.costPrice = Number(product.costPrice) || 0;
+        if (typeof product.sellingPrice !== 'number') product.sellingPrice = Number(product.sellingPrice) || 0;
       });
+    });
+
+    // Version 5 – add subscription tables
+    this.version(5).stores({
+      subscriptionPlans: 'id, name',
+      currentSubscription: 'id',
     });
   }
 }

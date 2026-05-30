@@ -1,4 +1,3 @@
-// src/pages/Inventory.tsx
 import { useEffect, useState, useMemo } from 'react';
 import { useProductStore } from '../stores/productStore';
 import { useAuthStore } from '../stores/authStore';
@@ -158,14 +157,20 @@ export default function Inventory() {
             <ArrowDownTrayIcon className="h-4 w-4" />
             <span className="hidden sm:inline">Export</span>
           </Button>
-          <Button
-            variant="secondary"
-            onClick={() => setShowImportModal(true)}
-            className="flex items-center gap-1 touch-manipulation"
-          >
-            <ArrowUpTrayIcon className="h-4 w-4" />
-            <span className="hidden sm:inline">Import</span>
-          </Button>
+
+          {/* Only owners can import */}
+          {user?.role === 'OWNER' && (
+            <Button
+              variant="secondary"
+              onClick={() => setShowImportModal(true)}
+              className="flex items-center gap-1 touch-manipulation"
+            >
+              <ArrowUpTrayIcon className="h-4 w-4" />
+              <span className="hidden sm:inline">Import</span>
+            </Button>
+          )}
+
+          {/* Only owners can add products */}
           {user?.role === 'OWNER' && (
             <Button
               onClick={() => {
@@ -183,36 +188,20 @@ export default function Inventory() {
       {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
         <div className="bg-white rounded-xl shadow p-3 md:p-4">
-          <p className="text-xs md:text-sm text-gray-500 uppercase tracking-wide">
-            Total Products
-          </p>
-          <p className="text-xl md:text-2xl font-bold text-gray-900 mt-1">
-            {formatNumber(totalProducts)}
-          </p>
+          <p className="text-xs md:text-sm text-gray-500 uppercase tracking-wide">Total Products</p>
+          <p className="text-xl md:text-2xl font-bold text-gray-900 mt-1">{formatNumber(totalProducts)}</p>
         </div>
         <div className="bg-white rounded-xl shadow p-3 md:p-4">
-          <p className="text-xs md:text-sm text-gray-500 uppercase tracking-wide">
-            Total Stock Qty
-          </p>
-          <p className="text-xl md:text-2xl font-bold text-gray-900 mt-1">
-            {formatNumber(totalQuantity)}
-          </p>
+          <p className="text-xs md:text-sm text-gray-500 uppercase tracking-wide">Total Stock Qty</p>
+          <p className="text-xl md:text-2xl font-bold text-gray-900 mt-1">{formatNumber(totalQuantity)}</p>
         </div>
         <div className="bg-white rounded-xl shadow p-3 md:p-4">
-          <p className="text-xs md:text-sm text-gray-500 uppercase tracking-wide">
-            Total Cost Value
-          </p>
-          <p className="text-xl md:text-2xl font-bold text-green-600 mt-1">
-            {formatCurrency(totalCost)}
-          </p>
+          <p className="text-xs md:text-sm text-gray-500 uppercase tracking-wide">Total Cost Value</p>
+          <p className="text-xl md:text-2xl font-bold text-green-600 mt-1">{formatCurrency(totalCost)}</p>
         </div>
         <div className="bg-white rounded-xl shadow p-3 md:p-4">
-          <p className="text-xs md:text-sm text-gray-500 uppercase tracking-wide">
-            Total Retail Value
-          </p>
-          <p className="text-xl md:text-2xl font-bold text-green-600 mt-1">
-            {formatCurrency(totalRetail)}
-          </p>
+          <p className="text-xs md:text-sm text-gray-500 uppercase tracking-wide">Total Retail Value</p>
+          <p className="text-xl md:text-2xl font-bold text-green-600 mt-1">{formatCurrency(totalRetail)}</p>
         </div>
       </div>
 
@@ -266,22 +255,15 @@ export default function Inventory() {
               <div className="text-center py-8 text-gray-400">No products found.</div>
             )}
             {paginatedProducts.map((product) => (
-              <div
-                key={product.id}
-                className="bg-white rounded-xl shadow p-4 flex flex-col gap-2"
-              >
+              <div key={product.id} className="bg-white rounded-xl shadow p-4 flex flex-col gap-2">
                 <div className="flex justify-between items-start">
                   <div>
                     <h3 className="font-semibold text-gray-900">{product.name}</h3>
-                    {product.sku && (
-                      <p className="text-xs text-gray-500 mt-0.5">SKU: {product.sku}</p>
-                    )}
+                    {product.sku && <p className="text-xs text-gray-500 mt-0.5">SKU: {product.sku}</p>}
                   </div>
                   <span
                     className={`text-sm font-bold ${
-                      product.currentStock <= product.lowStockThreshold
-                        ? 'text-red-600'
-                        : 'text-gray-700'
+                      product.currentStock <= product.lowStockThreshold ? 'text-red-600' : 'text-gray-700'
                     }`}
                   >
                     {product.currentStock} in stock
@@ -297,18 +279,20 @@ export default function Inventory() {
                     <span className="font-medium">GHS {Number(product.costPrice).toFixed(2)}</span>
                   </div>
                 </div>
+
+                {/* Actions – only owners get edit/stock/delete buttons */}
                 <div className="flex gap-2 mt-1">
-                  <button
-                    onClick={() => {
-                      setSelectedProduct(product);
-                      setShowProductModal(true);
-                    }}
-                    className="flex-1 py-2 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 touch-manipulation"
-                  >
-                    Edit
-                  </button>
-                  {user?.role === 'OWNER' && (
+                  {user?.role === 'OWNER' ? (
                     <>
+                      <button
+                        onClick={() => {
+                          setSelectedProduct(product);
+                          setShowProductModal(true);
+                        }}
+                        className="flex-1 py-2 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 touch-manipulation"
+                      >
+                        Edit
+                      </button>
                       <button
                         onClick={() => {
                           setSelectedProduct(product);
@@ -325,6 +309,8 @@ export default function Inventory() {
                         Delete
                       </button>
                     </>
+                  ) : (
+                    <div className="flex-1 text-center py-2 text-sm text-gray-400">View only</div>
                   )}
                 </div>
               </div>
@@ -354,26 +340,24 @@ export default function Inventory() {
                     <td className="px-6 py-4">
                       <span
                         className={
-                          product.currentStock <= product.lowStockThreshold
-                            ? 'text-red-600 font-bold'
-                            : ''
+                          product.currentStock <= product.lowStockThreshold ? 'text-red-600 font-bold' : ''
                         }
                       >
                         {product.currentStock}
                       </span>
                     </td>
                     <td className="px-6 py-4 space-x-2">
-                      <button
-                        onClick={() => {
-                          setSelectedProduct(product);
-                          setShowProductModal(true);
-                        }}
-                        className="text-blue-600 hover:underline touch-manipulation"
-                      >
-                        Edit
-                      </button>
-                      {user?.role === 'OWNER' && (
+                      {user?.role === 'OWNER' ? (
                         <>
+                          <button
+                            onClick={() => {
+                              setSelectedProduct(product);
+                              setShowProductModal(true);
+                            }}
+                            className="text-blue-600 hover:underline touch-manipulation"
+                          >
+                            Edit
+                          </button>
                           <button
                             onClick={() => {
                               setSelectedProduct(product);
@@ -390,6 +374,8 @@ export default function Inventory() {
                             Delete
                           </button>
                         </>
+                      ) : (
+                        <span className="text-gray-400 text-sm">View only</span>
                       )}
                     </td>
                   </tr>
@@ -409,9 +395,8 @@ export default function Inventory() {
           {filteredProducts.length > 0 && (
             <div className="flex items-center justify-between mt-4 flex-wrap gap-3">
               <p className="text-sm text-gray-500">
-                Showing {((currentPage - 1) * pageSize) + 1}–
-                {Math.min(currentPage * pageSize, filteredProducts.length)} of{' '}
-                {filteredProducts.length}
+                Showing {Math.min((currentPage - 1) * pageSize + 1, filteredProducts.length)}–
+                {Math.min(currentPage * pageSize, filteredProducts.length)} of {filteredProducts.length}
               </p>
               <div className="flex items-center gap-1">
                 <button
@@ -431,9 +416,7 @@ export default function Inventory() {
                       key={page}
                       onClick={() => setCurrentPage(page)}
                       className={`px-3 py-1 rounded-lg text-sm font-medium touch-manipulation ${
-                        page === currentPage
-                          ? 'bg-green-600 text-white'
-                          : 'border hover:bg-gray-100'
+                        page === currentPage ? 'bg-green-600 text-white' : 'border hover:bg-gray-100'
                       }`}
                     >
                       {page}
@@ -458,20 +441,29 @@ export default function Inventory() {
         <ProductModal
           product={selectedProduct}
           onClose={() => setShowProductModal(false)}
-          onSuccess={() => { setShowProductModal(false); refreshAll(); }}
+          onSuccess={() => {
+            setShowProductModal(false);
+            refreshAll();
+          }}
         />
       )}
       {showStockModal && selectedProduct && (
         <StockAdjustModal
           product={selectedProduct}
           onClose={() => setShowStockModal(false)}
-          onSuccess={() => { setShowStockModal(false); refreshAll(); }}
+          onSuccess={() => {
+            setShowStockModal(false);
+            refreshAll();
+          }}
         />
       )}
       {showImportModal && (
         <ImportModal
           onClose={() => setShowImportModal(false)}
-          onSuccess={() => { setShowImportModal(false); refreshAll(); }}
+          onSuccess={() => {
+            setShowImportModal(false);
+            refreshAll();
+          }}
         />
       )}
       {deleteTarget && (

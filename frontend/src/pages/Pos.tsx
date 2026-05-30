@@ -26,7 +26,7 @@ import { db } from '../lib/dexie';
 const round2 = (value: number) => Math.round(value * 100) / 100;
 
 export default function Pos() {
-  const { products, fetchProducts } = useProductStore();
+  const { products, fetchProducts, loading: productsLoading, fullyLoaded } = useProductStore();
   const { items, total, clearCart, updateQuantity, removeItem } = useCartStore();
   const { addSale } = useSyncStore();
   const { user, shop } = useAuthStore();
@@ -85,12 +85,11 @@ export default function Pos() {
       total: round2(i.quantity * i.product.sellingPrice),
     }));
 
-    // Fetch product names from Dexie
     const productIds = rawItems.map((item) => item.productId);
     let itemNames: Record<string, string> = {};
     try {
-      const products = await db.products.bulkGet(productIds);
-      products.forEach((product, index) => {
+      const productsList = await db.products.bulkGet(productIds);
+      productsList.forEach((product, index) => {
         if (product) {
           itemNames[productIds[index]] = product.name;
         }
@@ -118,11 +117,9 @@ export default function Pos() {
       idempotencyKey: crypto.randomUUID(),
     };
 
-    // Close payment modal & show receipt – cart stays intact behind it
     setShowPaymentModal(false);
     setCompletedSale(sale);
     setShowReceiptModal(true);
-    // ❌ DO NOT clear cart here – will be cleared when receipt is closed
 
     addToast({
       message: `Sale recorded! GHS ${finalTotal.toFixed(2)} via ${paymentMethod}`,
@@ -130,7 +127,6 @@ export default function Pos() {
       duration: 4000,
     });
 
-    // Background sync
     try {
       if (navigator.onLine) {
         try {
@@ -176,7 +172,6 @@ export default function Pos() {
     }
   };
 
-  // When receipt is closed, NOW clear the cart for a fresh start
   const handleCloseReceipt = () => {
     clearCart();
     setShowReceiptModal(false);
@@ -185,6 +180,11 @@ export default function Pos() {
 
   const headerHeight = 80;
   const cartHeight = items.length > 0 && !showReceiptModal ? 120 : 0;
+
+  // Show loading until first products are loaded (from cache or sync)
+  if (productsLoading && products.length === 0 && !fullyLoaded) {
+    return <div className="flex items-center justify-center h-screen">Loading products...</div>;
+  }
 
   return (
     <div className="flex flex-col h-dvh bg-gray-50 pb-safe-bottom">
@@ -248,7 +248,6 @@ export default function Pos() {
 
       <LowStockBanner />
 
-      {/* Product area */}
       <div
         className="flex-1 overflow-y-auto p-3 sm:p-4"
         style={{ maxHeight: `calc(100dvh - ${headerHeight + cartHeight}px)` }}
@@ -274,7 +273,6 @@ export default function Pos() {
         )}
       </div>
 
-      {/* Bottom cart bar – hidden while receipt is open */}
       {items.length > 0 && !showReceiptModal && (
         <div className="sticky bottom-0 bg-white border-t shadow-lg p-3 sm:p-4 z-10 pb-safe-bottom">
           <div className="flex flex-col gap-2">
@@ -344,7 +342,7 @@ export default function Pos() {
 
       <ReceiptModal
         isOpen={showReceiptModal}
-        onClose={handleCloseReceipt}   // ← clear cart only when closing the receipt
+        onClose={handleCloseReceipt}
         sale={completedSale}
       />
     </div>

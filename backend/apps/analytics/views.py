@@ -1,7 +1,7 @@
 from datetime import timedelta
-from django.db.models import Sum, Count, Q, Subquery, Avg, OuterRef
+from django.db.models import Sum, Count, Q, Subquery, Avg, OuterRef, DecimalField, Value, IntegerField
+from django.db.models.functions import Coalesce, TruncWeek, TruncDate
 from django.utils import timezone
-from django.db.models.functions import TruncWeek, TruncDate
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
@@ -10,6 +10,7 @@ from apps.users.models import Shop, User
 from apps.sales.models import Sale
 from apps.products.models import Product
 from apps.audit.models import AuditLog
+from apps.customers.models import Customer
 
 from .permissions import IsSuperUser
 from .mixins import DateRangeMixin
@@ -78,19 +79,85 @@ class ShopPerformanceView(APIView):
     pagination_class = ShopPerformancePagination
 
     def get(self, request):
-        shops = Shop.objects.select_related('owner').annotate(
-            total_sales=Sum('sales__total_amount', filter=Q(sales__status='COMPLETED'), default=0),
-            sales_count=Count('sales', filter=Q(sales__status='COMPLETED')),
-            avg_sale=Avg('sales__total_amount', filter=Q(sales__status='COMPLETED'), default=0),
-            total_credit=Sum('customers__total_credit', default=0),
-            credit_customers=Count('customers', filter=Q(customers__total_credit__gt=0)),
-            products_count=Count('products', filter=Q(products__is_active=True)),
-            last_activity=Subquery(
-                AuditLog.objects.filter(
-                    shop=OuterRef('pk'),
-                    action=AuditLog.ActionType.LOGIN
-                ).order_by('-created_at').values('created_at')[:1]
-            )
+        # Base queryset – we will annotate using subqueries to avoid multiplication
+        shops = Shop.objects.select_related('owner').all()
+
+        # Subquery for total_sales (sum of total_amount for completed sales)
+        total_sales_sub = Subquery(
+            Sale.objects.filter(
+                shop=OuterRef('pk'),
+                status='COMPLETED'
+            ).values('shop').annotate(
+                total=Sum('total_amount')
+            ).values('total')[:1]
+        )
+
+        # Subquery for sales_count
+        sales_count_sub = Subquery(
+            Sale.objects.filter(
+                shop=OuterRef('pk'),
+                status='COMPLETED'
+            ).values('shop').annotate(
+                cnt=Count('id')
+            ).values('cnt')[:1]
+        )
+
+        # Subquery for avg_sale (calculated as total / count, but we can use Avg directly in subquery)
+        avg_sale_sub = Subquery(
+            Sale.objects.filter(
+                shop=OuterRef('pk'),
+                status='COMPLETED'
+            ).values('shop').annotate(
+                avg=Avg('total_amount')
+            ).values('avg')[:1]
+        )
+
+        # Subquery for total_credit (sum of customer total_credit)
+        total_credit_sub = Subquery(
+            Customer.objects.filter(
+                shop=OuterRef('pk')
+            ).values('shop').annotate(
+                total=Sum('total_credit')
+            ).values('total')[:1]
+        )
+
+        # Subquery for credit_customers (count of customers with total_credit > 0)
+        credit_customers_sub = Subquery(
+            Customer.objects.filter(
+                shop=OuterRef('pk'),
+                total_credit__gt=0
+            ).values('shop').annotate(
+                cnt=Count('id')
+            ).values('cnt')[:1]
+        )
+
+        # Subquery for products_count (active products only)
+        products_count_sub = Subquery(
+            Product.objects.filter(
+                shop=OuterRef('pk'),
+                is_active=True
+            ).values('shop').annotate(
+                cnt=Count('id')
+            ).values('cnt')[:1]
+        )
+
+        # Subquery for last_activity (most recent LOGIN audit log)
+        last_activity_sub = Subquery(
+            AuditLog.objects.filter(
+                shop=OuterRef('pk'),
+                action=AuditLog.ActionType.LOGIN
+            ).order_by('-created_at').values('created_at')[:1]
+        )
+
+        # Apply annotations using Coalesce to handle nulls
+        shops = shops.annotate(
+            total_sales=Coalesce(total_sales_sub, Value(0), output_field=DecimalField(max_digits=15, decimal_places=2)),
+            sales_count=Coalesce(sales_count_sub, Value(0), output_field=IntegerField()),
+            avg_sale=Coalesce(avg_sale_sub, Value(0), output_field=DecimalField(max_digits=10, decimal_places=2)),
+            total_credit=Coalesce(total_credit_sub, Value(0), output_field=DecimalField(max_digits=15, decimal_places=2)),
+            credit_customers=Coalesce(credit_customers_sub, Value(0), output_field=IntegerField()),
+            products_count=Coalesce(products_count_sub, Value(0), output_field=IntegerField()),
+            last_activity=last_activity_sub,
         ).order_by('-total_sales')
 
         paginator = self.pagination_class()
@@ -121,10 +188,8 @@ class FeatureUsageView(APIView, DateRangeMixin):
             count=Count('id')
         ).order_by('date')
 
-        # Build date range for zero-filling
         date_range = [start + timedelta(days=i) for i in range((end - start).days + 1)]
 
-        # Aggregate data per action per date
         series_dict = {}
         for item in qs:
             action = item['action']
