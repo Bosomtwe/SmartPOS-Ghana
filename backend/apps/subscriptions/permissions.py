@@ -1,3 +1,4 @@
+# apps/subscriptions/permissions.py
 from rest_framework.permissions import BasePermission
 
 
@@ -14,7 +15,10 @@ class HasSubscriptionFeature(BasePermission):
         if not request.user or not request.user.is_authenticated:
             return False
         shop = request.user.shop
-        if not shop or not hasattr(shop, 'subscription'):
+        if not shop:
+            # User without a shop cannot have subscription features
+            return False
+        if not hasattr(shop, 'subscription'):
             return False
         return shop.subscription.is_active
 
@@ -30,7 +34,9 @@ class MaxUsersPermission(BasePermission):
             return True
 
         shop = request.user.shop
-        if not shop or not hasattr(shop, 'subscription'):
+        if not shop:
+            return False
+        if not hasattr(shop, 'subscription'):
             return False
         return shop.subscription.is_active
 
@@ -46,6 +52,8 @@ class MaxProductsPermission(BasePermission):
             return True
 
         shop = request.user.shop
-        if not shop or not hasattr(shop, 'subscription'):
+        if not shop:
+            return False
+        if not hasattr(shop, 'subscription'):
             return False
         return shop.subscription.is_active

@@ -21,6 +21,13 @@ from apps.subscriptions.permissions import MaxProductsPermission, HasSubscriptio
 logger = logging.getLogger(__name__)
 
 
+# Helper to safely get shop or return None
+def get_user_shop(user):
+    if not user or not user.is_authenticated:
+        return None
+    return user.shop
+
+
 # ✅ Apply MaxProductsPermission to product creation (still enforces limit for single creation)
 class ProductListCreateView(generics.ListCreateAPIView):
     serializer_class = ProductSerializer
@@ -30,19 +37,22 @@ class ProductListCreateView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        shop = self.request.user.shop
+        shop = get_user_shop(self.request.user)
+        if not shop:
+            return Product.objects.none()
         cache_key = f'product_list_{shop.id}'
         products = cache.get(cache_key)
-
         if products is None:
             products = list(Product.objects.filter(shop=shop, is_active=True))
             cache.set(cache_key, products, 60 * 5)
-
         return products
 
     def perform_create(self, serializer):
-        instance = serializer.save(shop=self.request.user.shop)
-        cache.delete(f'product_list_{self.request.user.shop.id}')
+        shop = get_user_shop(self.request.user)
+        if not shop:
+            raise PermissionError("User has no associated shop")
+        instance = serializer.save(shop=shop)
+        cache.delete(f'product_list_{shop.id}')
 
 
 class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -50,12 +60,17 @@ class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated, IsOwnerOrCashierReadOnly]
 
     def get_queryset(self):
-        return Product.objects.filter(shop=self.request.user.shop)
+        shop = get_user_shop(self.request.user)
+        if not shop:
+            return Product.objects.none()
+        return Product.objects.filter(shop=shop)
 
     def partial_update(self, request, *args, **kwargs):
         try:
             response = super().partial_update(request, *args, **kwargs)
-            cache.delete(f'product_list_{self.request.user.shop.id}')
+            shop = get_user_shop(request.user)
+            if shop:
+                cache.delete(f'product_list_{shop.id}')
             return response
         except IntegrityError as e:
             if 'unique constraint' in str(e) and 'sku' in str(e):
@@ -68,7 +83,9 @@ class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
     def update(self, request, *args, **kwargs):
         try:
             response = super().update(request, *args, **kwargs)
-            cache.delete(f'product_list_{self.request.user.shop.id}')
+            shop = get_user_shop(request.user)
+            if shop:
+                cache.delete(f'product_list_{shop.id}')
             return response
         except IntegrityError as e:
             if 'unique constraint' in str(e) and 'sku' in str(e):
@@ -81,14 +98,23 @@ class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
     def perform_destroy(self, instance):
         instance.is_active = False
         instance.save()
-        cache.delete(f'product_list_{instance.shop_id}')
+        shop = instance.shop_id
+        cache.delete(f'product_list_{shop}')
 
 
 class StockAdjustView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated, IsOwnerOrCashierReadOnly]
 
     def post(self, request, pk):
-        product = Product.objects.get(pk=pk, shop=request.user.shop)
+        shop = get_user_shop(request.user)
+        if not shop:
+            return Response({"error": "User has no associated shop"}, status=400)
+
+        try:
+            product = Product.objects.get(pk=pk, shop=shop)
+        except Product.DoesNotExist:
+            return Response({"error": "Product not found"}, status=404)
+
         delta = request.data.get('quantity', 0)
         reason = request.data.get('reason', '')
 
@@ -109,7 +135,7 @@ class StockAdjustView(generics.GenericAPIView):
             )
 
             log_action(
-                shop=request.user.shop,
+                shop=shop,
                 user=request.user,
                 action='STOCK_ADJUST',
                 details={
@@ -123,7 +149,7 @@ class StockAdjustView(generics.GenericAPIView):
                 request=request
             )
 
-        cache.delete(f'product_list_{request.user.shop.id}')
+        cache.delete(f'product_list_{shop.id}')
         return Response(ProductSerializer(product).data)
 
 
@@ -138,7 +164,9 @@ class BulkImportView(generics.GenericAPIView):
         if not file:
             return Response({'error': 'No file provided'}, status=status.HTTP_400_BAD_REQUEST)
 
-        shop = request.user.shop
+        shop = get_user_shop(request.user)
+        if not shop:
+            return Response({'error': 'User has no associated shop'}, status=400)
 
         # ❌ Removed product limit check – unlimited import for all plans
         # ✅ Only check that subscription is active (HasSubscriptionFeature already does that)
@@ -247,8 +275,11 @@ class LowStockAlertsView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        shop = get_user_shop(self.request.user)
+        if not shop:
+            return Product.objects.none()
         return Product.objects.filter(
-            shop=self.request.user.shop,
+            shop=shop,
             current_stock__lte=models.F('low_stock_threshold'),
             is_active=True
         )
@@ -258,7 +289,11 @@ class ProductExportView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        products = Product.objects.filter(shop=request.user.shop, is_active=True)
+        shop = get_user_shop(request.user)
+        if not shop:
+            return Response({"error": "User has no associated shop"}, status=400)
+
+        products = Product.objects.filter(shop=shop, is_active=True)
         response = HttpResponse(content_type='text/csv')
         response['Content-Disposition'] = 'attachment; filename="products.csv"'
 
@@ -276,7 +311,7 @@ class ProductExportView(generics.GenericAPIView):
             ])
 
         log_action(
-            shop=request.user.shop,
+            shop=shop,
             user=request.user,
             action='BACKUP_DOWNLOAD',
             details={'type': 'product_export'},
