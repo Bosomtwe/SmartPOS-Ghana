@@ -153,7 +153,7 @@ class StockAdjustView(generics.GenericAPIView):
         return Response(ProductSerializer(product).data)
 
 
-# ✅ Bulk import – optimized with bulk_create and bulk_update
+# ✅ Bulk import – optimized with bulk_create/bulk_update and safe empty value handling
 class BulkImportView(generics.GenericAPIView):
     parser_classes = [MultiPartParser]
     permission_classes = [permissions.IsAuthenticated, IsOwnerOrCashierReadOnly, HasSubscriptionFeature]
@@ -178,7 +178,7 @@ class BulkImportView(generics.GenericAPIView):
             logger.exception("Bulk import file read error")
             return Response({'error': f'Error reading file: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Clean column names
+        # Clean column names and data
         df = df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
         rename_map = {
             'SKU (Barcode)': 'sku', 'SKU': 'sku', 'sku (barcode)': 'sku',
@@ -194,7 +194,23 @@ class BulkImportView(generics.GenericAPIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Prepare data rows and collect SKUs
+        # Safe converters: empty strings become 0
+        def to_float(val):
+            if pd.isna(val) or str(val).strip() == '':
+                return 0.0
+            try:
+                return float(str(val).replace(',', ''))
+            except:
+                return 0.0
+
+        def to_int(val):
+            if pd.isna(val) or str(val).strip() == '':
+                return 0
+            try:
+                return int(float(str(val).replace(',', '')))
+            except:
+                return 0
+
         rows_data = []
         skus = []
         errors = []
@@ -205,21 +221,21 @@ class BulkImportView(generics.GenericAPIView):
                 sku = str(sku_val).strip() if sku_val and str(sku_val).strip() else None
                 skus.append(sku)
 
-                # Convert values
-                cost_price = float(str(row['cost_price']).replace(',', ''))
-                selling_price = float(str(row['selling_price']).replace(',', ''))
-                current_stock = int(float(str(row['current_stock']).replace(',', '')))
+                name = str(row['name']).strip()
+                if not name:
+                    raise ValueError("Product name is required")
+
+                cost_price = to_float(row['cost_price'])
+                selling_price = to_float(row['selling_price'])
+                current_stock = to_int(row['current_stock'])
 
                 low_stock_val = row.get('low_stock_threshold', '')
                 low_stock_threshold = 5
                 if low_stock_val and str(low_stock_val).strip():
-                    try:
-                        low_stock_threshold = int(float(str(low_stock_val).replace(',', '')))
-                    except ValueError:
-                        pass
+                    low_stock_threshold = to_int(low_stock_val)
 
                 rows_data.append({
-                    'name': str(row['name']).strip(),
+                    'name': name,
                     'cost_price': cost_price,
                     'selling_price': selling_price,
                     'current_stock': current_stock,
@@ -230,7 +246,7 @@ class BulkImportView(generics.GenericAPIView):
             except Exception as e:
                 errors.append(f"Row {idx+2}: {str(e)}")
 
-        # If any row had an error, return early with errors (no changes)
+        # If any row error, return early without any DB changes
         if errors:
             return Response({'created': 0, 'updated': 0, 'errors': errors}, status=status.HTTP_200_OK)
 
