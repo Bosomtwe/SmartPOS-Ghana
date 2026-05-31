@@ -4,10 +4,10 @@ from apps.users.models import Shop
 
 class ShopSerializer(serializers.ModelSerializer):
     owner_phone = serializers.CharField(source='owner.phone', read_only=True, default=None)
-    
+
     class Meta:
         model = Shop
-        fields = ['id', 'name', 'owner_phone']
+        fields = ['id', 'name', 'owner_phone', 'is_active']   # ADD is_active
 
 
 class SubscriptionPlanSerializer(serializers.ModelSerializer):
@@ -22,7 +22,6 @@ class ShopSubscriptionSerializer(serializers.ModelSerializer):
     plan_name = serializers.CharField(source='plan.name', read_only=True)
     is_active = serializers.BooleanField(read_only=True)
     shop = ShopSerializer(read_only=True)
-    # Explicit PrimaryKeyRelatedField for plan to ensure updates work
     plan = serializers.PrimaryKeyRelatedField(queryset=SubscriptionPlan.objects.all())
 
     class Meta:

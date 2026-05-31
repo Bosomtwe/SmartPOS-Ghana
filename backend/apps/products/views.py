@@ -21,7 +21,7 @@ from apps.subscriptions.permissions import MaxProductsPermission, HasSubscriptio
 logger = logging.getLogger(__name__)
 
 
-# ✅ Apply MaxProductsPermission to product creation
+# ✅ Apply MaxProductsPermission to product creation (still enforces limit for single creation)
 class ProductListCreateView(generics.ListCreateAPIView):
     serializer_class = ProductSerializer
     permission_classes = [permissions.IsAuthenticated, IsOwnerOrCashierReadOnly, MaxProductsPermission]
@@ -127,7 +127,7 @@ class StockAdjustView(generics.GenericAPIView):
         return Response(ProductSerializer(product).data)
 
 
-# ✅ Apply HasSubscriptionFeature to bulk import (only allowed if plan permits)
+# ✅ Bulk import – NO PRODUCT LIMIT (unlimited for all subscription plans)
 class BulkImportView(generics.GenericAPIView):
     parser_classes = [MultiPartParser]
     permission_classes = [permissions.IsAuthenticated, IsOwnerOrCashierReadOnly, HasSubscriptionFeature]
@@ -138,15 +138,10 @@ class BulkImportView(generics.GenericAPIView):
         if not file:
             return Response({'error': 'No file provided'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Also check product limit before importing
         shop = request.user.shop
-        current_product_count = Product.objects.filter(shop=shop, is_active=True).count()
-        plan = shop.subscription.plan if hasattr(shop, 'subscription') else None
-        if plan and current_product_count >= plan.max_products:
-            return Response(
-                {'error': f'Product limit reached. Your plan allows only {plan.max_products} products.'},
-                status=status.HTTP_403_FORBIDDEN
-            )
+
+        # ❌ Removed product limit check – unlimited import for all plans
+        # ✅ Only check that subscription is active (HasSubscriptionFeature already does that)
 
         try:
             if file.name.endswith('.csv'):
@@ -154,6 +149,7 @@ class BulkImportView(generics.GenericAPIView):
             else:
                 df = pd.read_excel(file, dtype=str, keep_default_na=False)
         except Exception as e:
+            logger.exception("Bulk import file read error")
             return Response({'error': f'Error reading file: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 
         df = df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
@@ -178,14 +174,9 @@ class BulkImportView(generics.GenericAPIView):
         errors = []
         created = 0
         updated = 0
-        max_products_allowed = plan.max_products if plan else float('inf')
+        # ✅ No max_products limit – unlimited import
 
         for idx, row in df.iterrows():
-            # Stop if we reach the product limit
-            if created + updated >= max_products_allowed:
-                errors.append(f"Row {idx+2}: Import stopped – product limit reached.")
-                break
-
             try:
                 sku_val = row.get('sku', '')
                 sku = str(sku_val).strip() if sku_val and str(sku_val).strip() else None
@@ -194,12 +185,29 @@ class BulkImportView(generics.GenericAPIView):
                 if sku:
                     product = Product.objects.filter(shop=shop, sku=sku).first()
 
-                cost_price = float(row['cost_price'].replace(',', ''))
-                selling_price = float(row['selling_price'].replace(',', ''))
-                current_stock = int(float(row['current_stock'].replace(',', '')))
+                # Safe conversion with error handling
+                try:
+                    cost_price = float(str(row['cost_price']).replace(',', ''))
+                except (ValueError, TypeError):
+                    raise ValueError(f"Invalid cost_price: {row['cost_price']}")
+
+                try:
+                    selling_price = float(str(row['selling_price']).replace(',', ''))
+                except (ValueError, TypeError):
+                    raise ValueError(f"Invalid selling_price: {row['selling_price']}")
+
+                try:
+                    current_stock = int(float(str(row['current_stock']).replace(',', '')))
+                except (ValueError, TypeError):
+                    raise ValueError(f"Invalid current_stock: {row['current_stock']}")
 
                 low_stock_val = row.get('low_stock_threshold', '')
-                low_stock_threshold = int(float(str(low_stock_val).replace(',', ''))) if low_stock_val and str(low_stock_val).strip() else 5
+                low_stock_threshold = 5
+                if low_stock_val and str(low_stock_val).strip():
+                    try:
+                        low_stock_threshold = int(float(str(low_stock_val).replace(',', '')))
+                    except ValueError:
+                        pass  # keep default
 
                 data = {
                     'name': str(row['name']).strip(),
@@ -221,7 +229,9 @@ class BulkImportView(generics.GenericAPIView):
                     created += 1
 
             except Exception as e:
-                errors.append(f"Row {idx+2}: {str(e)}")
+                error_msg = f"Row {idx+2}: {str(e)}"
+                errors.append(error_msg)
+                logger.warning(error_msg)
 
         cache.delete(f'product_list_{shop.id}')
 

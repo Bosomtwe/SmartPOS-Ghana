@@ -16,9 +16,18 @@ from django.conf import settings
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.db import transaction
+import logging
 
 # ✅ Import subscription permission
 from apps.subscriptions.permissions import MaxUsersPermission
+
+logger = logging.getLogger(__name__)
+
+# ================ SUPERUSER PERMISSION ================
+class IsSuperUser(permissions.BasePermission):
+    def has_permission(self, request, view):
+        return request.user and request.user.is_superuser
 
 
 class RegisterView(generics.CreateAPIView):
@@ -249,3 +258,55 @@ class ReactivateCashierView(APIView):
         cashier.is_active = True
         cashier.save()
         return Response({'message': 'Cashier reactivated', 'is_active': True})
+
+
+# ==================== ADMIN SHOP MANAGEMENT ====================
+class AdminShopListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated, IsSuperUser]
+    serializer_class = ShopSerializer
+    queryset = Shop.objects.all().order_by('name')
+
+
+class AdminShopUpdateView(APIView):
+    permission_classes = [IsAuthenticated, IsSuperUser]
+
+    def patch(self, request, shop_id):
+        is_active = request.data.get('is_active')
+        if is_active is None:
+            return Response({'error': 'is_active field required'}, status=400)
+
+        from .models import set_admin_override, clear_admin_override
+
+        logger.info(f"[PATCH] Received is_active={is_active} for shop {shop_id}")
+
+        set_admin_override(True)
+        try:
+            shop = get_object_or_404(Shop, id=shop_id)
+            old_value = shop.is_active
+            logger.info(f"[PATCH] Current DB value: is_active={old_value}, skip_auto_reactivation={shop.skip_auto_reactivation}")
+
+            shop.is_active = is_active
+            shop.save(update_fields=['is_active', 'skip_auto_reactivation'])
+            logger.info(f"[PATCH] Saved → is_active={shop.is_active}")
+
+            # Force fresh read from database
+            shop.refresh_from_db()
+            logger.info(f"[PATCH] After refresh_from_db: is_active={shop.is_active}")
+        finally:
+            clear_admin_override()
+
+        # Optional audit logging
+        try:
+            from apps.audit.utils import log_action
+            from apps.audit.models import AuditLog
+            log_action(
+                shop=shop,
+                user=request.user,
+                action='SHOP_STATUS_CHANGE',
+                details={'shop_id': str(shop.id), 'is_active': shop.is_active},
+                request=request
+            )
+        except Exception as e:
+            logger.error(f"Audit log failed: {e}")
+
+        return Response({'id': str(shop.id), 'is_active': shop.is_active})

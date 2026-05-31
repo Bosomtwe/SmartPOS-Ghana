@@ -4,7 +4,8 @@ from .views import (
     InitializePaymentView, VerifyPaymentView, TrialActivationView,
     AdminSubscriptionListView, AdminSubscriptionUpdateView,
     AdminSubscriptionActivateView, AdminPlanListView,
-    paystack_webhook   # <-- import webhook
+    AdminPlanCreateView, AdminPlanDetailView,
+    paystack_webhook
 )
 
 urlpatterns = [
@@ -16,11 +17,15 @@ urlpatterns = [
     path('subscriptions/trial/', TrialActivationView.as_view(), name='trial-activation'),
 
     # Paystack webhook
-    path('webhook/paystack/', paystack_webhook, name='paystack-webhook'),   # <-- add this
+    path('webhook/paystack/', paystack_webhook, name='paystack-webhook'),
 
     # Admin endpoints (superuser only)
     path('admin/subscriptions/', AdminSubscriptionListView.as_view(), name='admin-subscriptions'),
     path('admin/subscriptions/<uuid:pk>/', AdminSubscriptionUpdateView.as_view(), name='admin-subscription-update'),
     path('admin/shops/<uuid:shop_id>/activate/', AdminSubscriptionActivateView.as_view(), name='admin-shop-activate'),
-    path('admin/plans/', AdminPlanListView.as_view(), name='admin-plans'),
+
+    # Plan management (superuser only)
+    path('admin/plans/', AdminPlanListView.as_view(), name='admin-plans-list'),
+    path('admin/plans/create/', AdminPlanCreateView.as_view(), name='admin-plans-create'),
+    path('admin/plans/<uuid:id>/', AdminPlanDetailView.as_view(), name='admin-plans-detail'),
 ]

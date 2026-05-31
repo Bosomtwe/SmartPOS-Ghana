@@ -1,15 +1,15 @@
 from django.urls import path
-from rest_framework_simplejwt.views import TokenRefreshView #TokenObtainPairView, 
+from rest_framework_simplejwt.views import TokenRefreshView
 from apps.users.token_views import CustomTokenObtainPairView
 from .views import (
     RegisterView, UserDetailView, ShopDetailView,
     CreateCashierView, ResetCashierPasswordView, ListCashiersView,
     ForgotPasswordView, ResetPasswordView,
-    DeactivateCashierView, ReactivateCashierView
+    DeactivateCashierView, ReactivateCashierView,
+    AdminShopListView, AdminShopUpdateView   # ADD THESE
 )
 
 urlpatterns = [
-    #path('auth/login/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('auth/login/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('auth/register/', RegisterView.as_view(), name='register'),
@@ -21,7 +21,11 @@ urlpatterns = [
     path('users/cashier/<uuid:user_id>/deactivate/', DeactivateCashierView.as_view(), name='deactivate-cashier'),
     path('users/cashier/<uuid:user_id>/reactivate/', ReactivateCashierView.as_view(), name='reactivate-cashier'),
 
-    # Password reset (email‑based)
+    # Password reset
     path('auth/forgot-password/', ForgotPasswordView.as_view(), name='forgot_password'),
     path('auth/reset-password/<uidb64>/<token>/', ResetPasswordView.as_view(), name='reset_password'),
+
+    # Admin shop management (superuser only)
+    path('admin/shops/', AdminShopListView.as_view(), name='admin-shops-list'),
+    path('admin/shops/<uuid:shop_id>/', AdminShopUpdateView.as_view(), name='admin-shop-update'),
 ]

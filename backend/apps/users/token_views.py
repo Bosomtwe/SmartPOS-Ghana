@@ -10,15 +10,14 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     """
     Custom token view that logs successful and failed login attempts,
     and returns a friendly error message on failure.
+    Also blocks login if the shop is inactive (unless superuser).
     """
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
 
         try:
-            # validator raises AuthenticationFailed if credentials are wrong
             serializer.is_valid(raise_exception=True)
         except AuthenticationFailed as e:
-            # Log the failed attempt with the tried phone number
             log_action(
                 shop=None,
                 user=None,
@@ -34,8 +33,23 @@ class CustomTokenObtainPairView(TokenObtainPairView):
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        # Success – user is valid, log the login
         user = serializer.user
+
+        # ✅ Check if the shop is inactive (and user is not superuser)
+        if user.shop and not user.shop.is_active and not user.is_superuser:
+            log_action(
+                shop=user.shop,
+                user=user,
+                action=AuditLog.ActionType.LOGIN_FAILED,
+                details={'status': 'failed', 'reason': 'shop_inactive'},
+                request=request,
+            )
+            return Response(
+                {'detail': 'Your shop has been deactivated. Please contact support.'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # Success – user is valid, log the login
         log_action(
             shop=user.shop,
             user=user,

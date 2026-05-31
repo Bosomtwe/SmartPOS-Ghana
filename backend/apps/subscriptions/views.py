@@ -15,10 +15,13 @@ from rest_framework.permissions import IsAuthenticated, BasePermission, AllowAny
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
+import logging
 
 from .models import SubscriptionPlan, ShopSubscription
 from .serializers import SubscriptionPlanSerializer, ShopSubscriptionSerializer
 from apps.users.models import Shop
+
+logger = logging.getLogger(__name__)
 
 PAYSTACK_SECRET_KEY = settings.PAYSTACK_SECRET_KEY
 PAYSTACK_PUBLIC_KEY = settings.PAYSTACK_PUBLIC_KEY
@@ -73,7 +76,6 @@ class InitializePaymentView(APIView):
         if not cust_data.get('status'):
             return Response({"error": "Failed to create customer"}, status=400)
 
-        # ✅ Use HTTP callback in development, HTTPS in production
         if settings.DEBUG:
             callback_url = "http://localhost:8000/api/v1/subscriptions/verify/"
         else:
@@ -82,9 +84,8 @@ class InitializePaymentView(APIView):
         init_data = {
             "email": email,
             "amount": int(plan.price * 100),
-            # "plan": plan.paystack_plan_code,   # one‑time payment
             "callback_url": callback_url,
-            "channels": ["mobile_money"],        # Mobile Money only
+            "channels": ["mobile_money"],
             "metadata": {
                 "plan_id": str(plan.id),
                 "shop_id": str(shop.id),
@@ -136,7 +137,6 @@ class VerifyPaymentView(APIView):
 
         plan = SubscriptionPlan.objects.get(id=plan_id)
 
-        # Manual extension (same logic as webhook)
         sub, created = ShopSubscription.objects.get_or_create(
             shop=shop,
             defaults={
@@ -158,13 +158,18 @@ class VerifyPaymentView(APIView):
             sub.is_trial = False
             sub.save()
 
-        # ✅ Redirect to frontend login page with success message
-        # (The user will log in again on the same domain where the token is stored)
+        # Only reactivate shop if not manually skipped
+        if not shop.skip_auto_reactivation:
+            logger.info(f"[VerifyPayment] Reactivating shop {shop.id} because skip_auto_reactivation=False")
+            shop.is_active = True
+            shop.save(update_fields=['is_active'])
+        else:
+            logger.warning(f"[VerifyPayment] NOT reactivating shop {shop.id} because skip_auto_reactivation=True")
+
         return redirect(f'{settings.FRONTEND_URL}/login?payment=success&message=Subscription activated. Please log in.')
 
 
 class TrialActivationView(APIView):
-    """Start a 14‑day free trial with ALL features unlimited"""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -210,6 +215,15 @@ class TrialActivationView(APIView):
                 "auto_renew": False,
             }
         )
+
+        # Only reactivate shop if not manually skipped
+        if not shop.skip_auto_reactivation:
+            logger.info(f"[TrialActivation] Reactivating shop {shop.id} because skip_auto_reactivation=False")
+            shop.is_active = True
+            shop.save(update_fields=['is_active'])
+        else:
+            logger.warning(f"[TrialActivation] NOT reactivating shop {shop.id} because skip_auto_reactivation=True")
+
         return Response({"status": "trial_started", "expires": end_date})
 
 
@@ -217,11 +231,9 @@ class TrialActivationView(APIView):
 @csrf_exempt
 @require_POST
 def paystack_webhook(request):
-    """Handle charge.success – manually extend subscription (one‑time payment)."""
     secret = PAYSTACK_SECRET_KEY
     signature = request.headers.get('x-paystack-signature')
 
-    # Temporary bypass for manual testing (remove in production)
     if signature is not None:
         computed = hmac.new(secret.encode('utf-8'), request.body, hashlib.sha512).hexdigest()
         if not hmac.compare_digest(computed, signature):
@@ -245,7 +257,6 @@ def paystack_webhook(request):
         except (Shop.DoesNotExist, SubscriptionPlan.DoesNotExist):
             return JsonResponse({'error': 'Shop or Plan not found'}, status=404)
 
-        # Manual extension: add plan.duration_days to current end_date
         sub, created = ShopSubscription.objects.get_or_create(
             shop=shop,
             defaults={
@@ -266,6 +277,14 @@ def paystack_webhook(request):
             sub.paystack_customer_code = customer_code
             sub.is_trial = False
             sub.save()
+
+        # Only reactivate shop if not manually skipped
+        if not shop.skip_auto_reactivation:
+            logger.info(f"[Webhook] Reactivating shop {shop.id} because skip_auto_reactivation=False")
+            shop.is_active = True
+            shop.save(update_fields=['is_active'])
+        else:
+            logger.warning(f"[Webhook] NOT reactivating shop {shop.id} because skip_auto_reactivation=True")
 
     return JsonResponse({'status': 'success'})
 
@@ -310,11 +329,34 @@ class AdminSubscriptionActivateView(APIView):
                 'auto_renew': False,
             }
         )
+
+        # Only reactivate shop if not manually skipped
+        if not shop.skip_auto_reactivation:
+            logger.info(f"[AdminSubscriptionActivate] Reactivating shop {shop.id} because skip_auto_reactivation=False")
+            shop.is_active = True
+            shop.save(update_fields=['is_active'])
+        else:
+            logger.warning(f"[AdminSubscriptionActivate] NOT reactivating shop {shop.id} because skip_auto_reactivation=True")
+
         serializer = ShopSubscriptionSerializer(sub)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
+# ================ PLAN MANAGEMENT (superuser only) ================
 class AdminPlanListView(generics.ListAPIView):
     permission_classes = [IsSuperUser]
     serializer_class = SubscriptionPlanSerializer
-    queryset = SubscriptionPlan.objects.filter(is_active=True)
+    queryset = SubscriptionPlan.objects.all().order_by('name')
+
+
+class AdminPlanCreateView(generics.CreateAPIView):
+    permission_classes = [IsSuperUser]
+    serializer_class = SubscriptionPlanSerializer
+    queryset = SubscriptionPlan.objects.all()
+
+
+class AdminPlanDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsSuperUser]
+    serializer_class = SubscriptionPlanSerializer
+    queryset = SubscriptionPlan.objects.all()
+    lookup_field = 'id'
