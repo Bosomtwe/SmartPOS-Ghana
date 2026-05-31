@@ -153,7 +153,7 @@ class StockAdjustView(generics.GenericAPIView):
         return Response(ProductSerializer(product).data)
 
 
-# ✅ Bulk import – NO PRODUCT LIMIT (unlimited for all subscription plans)
+# ✅ Bulk import – optimized with bulk_create and bulk_update
 class BulkImportView(generics.GenericAPIView):
     parser_classes = [MultiPartParser]
     permission_classes = [permissions.IsAuthenticated, IsOwnerOrCashierReadOnly, HasSubscriptionFeature]
@@ -168,9 +168,7 @@ class BulkImportView(generics.GenericAPIView):
         if not shop:
             return Response({'error': 'User has no associated shop'}, status=400)
 
-        # ❌ Removed product limit check – unlimited import for all plans
-        # ✅ Only check that subscription is active (HasSubscriptionFeature already does that)
-
+        # Read file
         try:
             if file.name.endswith('.csv'):
                 df = pd.read_csv(file, dtype=str, keep_default_na=False)
@@ -180,14 +178,11 @@ class BulkImportView(generics.GenericAPIView):
             logger.exception("Bulk import file read error")
             return Response({'error': f'Error reading file: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Clean column names
         df = df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
-
         rename_map = {
-            'SKU (Barcode)': 'sku',
-            'SKU': 'sku',
-            'sku (barcode)': 'sku',
-            'Low Stock Threshold': 'low_stock_threshold',
-            'low stock threshold': 'low_stock_threshold',
+            'SKU (Barcode)': 'sku', 'SKU': 'sku', 'sku (barcode)': 'sku',
+            'Low Stock Threshold': 'low_stock_threshold', 'low stock threshold': 'low_stock_threshold',
         }
         df.rename(columns=rename_map, inplace=True)
 
@@ -199,35 +194,21 @@ class BulkImportView(generics.GenericAPIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # Prepare data rows and collect SKUs
+        rows_data = []
+        skus = []
         errors = []
-        created = 0
-        updated = 0
-        # ✅ No max_products limit – unlimited import
 
         for idx, row in df.iterrows():
             try:
                 sku_val = row.get('sku', '')
                 sku = str(sku_val).strip() if sku_val and str(sku_val).strip() else None
+                skus.append(sku)
 
-                product = None
-                if sku:
-                    product = Product.objects.filter(shop=shop, sku=sku).first()
-
-                # Safe conversion with error handling
-                try:
-                    cost_price = float(str(row['cost_price']).replace(',', ''))
-                except (ValueError, TypeError):
-                    raise ValueError(f"Invalid cost_price: {row['cost_price']}")
-
-                try:
-                    selling_price = float(str(row['selling_price']).replace(',', ''))
-                except (ValueError, TypeError):
-                    raise ValueError(f"Invalid selling_price: {row['selling_price']}")
-
-                try:
-                    current_stock = int(float(str(row['current_stock']).replace(',', '')))
-                except (ValueError, TypeError):
-                    raise ValueError(f"Invalid current_stock: {row['current_stock']}")
+                # Convert values
+                cost_price = float(str(row['cost_price']).replace(',', ''))
+                selling_price = float(str(row['selling_price']).replace(',', ''))
+                current_stock = int(float(str(row['current_stock']).replace(',', '')))
 
                 low_stock_val = row.get('low_stock_threshold', '')
                 low_stock_threshold = 5
@@ -235,9 +216,9 @@ class BulkImportView(generics.GenericAPIView):
                     try:
                         low_stock_threshold = int(float(str(low_stock_val).replace(',', '')))
                     except ValueError:
-                        pass  # keep default
+                        pass
 
-                data = {
+                rows_data.append({
                     'name': str(row['name']).strip(),
                     'cost_price': cost_price,
                     'selling_price': selling_price,
@@ -245,28 +226,60 @@ class BulkImportView(generics.GenericAPIView):
                     'sku': sku,
                     'low_stock_threshold': low_stock_threshold,
                     'is_active': True,
-                }
-
-                if product:
-                    for key, value in data.items():
-                        setattr(product, key, value)
-                    product.save()
-                    updated += 1
-                else:
-                    Product.objects.create(shop=shop, **data)
-                    created += 1
-
+                })
             except Exception as e:
-                error_msg = f"Row {idx+2}: {str(e)}"
-                errors.append(error_msg)
-                logger.warning(error_msg)
+                errors.append(f"Row {idx+2}: {str(e)}")
 
+        # If any row had an error, return early with errors (no changes)
+        if errors:
+            return Response({'created': 0, 'updated': 0, 'errors': errors}, status=status.HTTP_200_OK)
+
+        # Fetch existing products for non-null SKUs
+        existing_sku_map = {}
+        non_null_skus = [s for s in skus if s is not None]
+        if non_null_skus:
+            existing_products = Product.objects.filter(shop=shop, sku__in=non_null_skus)
+            existing_sku_map = {p.sku: p for p in existing_products}
+
+        # Separate into create and update lists
+        products_to_create = []
+        products_to_update = []
+
+        for data in rows_data:
+            sku = data['sku']
+            if sku and sku in existing_sku_map:
+                product = existing_sku_map[sku]
+                product.name = data['name']
+                product.cost_price = data['cost_price']
+                product.selling_price = data['selling_price']
+                product.current_stock = data['current_stock']
+                product.low_stock_threshold = data['low_stock_threshold']
+                product.is_active = data['is_active']
+                products_to_update.append(product)
+            else:
+                products_to_create.append(Product(shop=shop, **data))
+
+        # Bulk operations
+        created_count = 0
+        updated_count = 0
+        with transaction.atomic():
+            if products_to_create:
+                Product.objects.bulk_create(products_to_create)
+                created_count = len(products_to_create)
+            if products_to_update:
+                Product.objects.bulk_update(
+                    products_to_update,
+                    fields=['name', 'cost_price', 'selling_price', 'current_stock', 'low_stock_threshold', 'is_active']
+                )
+                updated_count = len(products_to_update)
+
+        # Invalidate cache
         cache.delete(f'product_list_{shop.id}')
 
         return Response({
-            'created': created,
-            'updated': updated,
-            'errors': errors
+            'created': created_count,
+            'updated': updated_count,
+            'errors': errors,
         }, status=status.HTTP_200_OK)
 
 
