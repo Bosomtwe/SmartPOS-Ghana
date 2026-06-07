@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './stores/authStore';
 import { useSyncStore } from './stores/syncStore';
 import { useSubscriptionStore } from './stores/subscriptionStore';
+import { useProductMutationStore } from './stores/productMutationStore';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import ResetPassword from './pages/ResetPassword';
@@ -53,9 +54,7 @@ export default function App() {
 
   // Background subscription caching for offline use
   useEffect(() => {
-    // Only for authenticated non-superuser owners
     if (token && user && !user.is_superuser && user.role === 'OWNER') {
-      // Fetch and cache subscription data (only if online)
       if (navigator.onLine) {
         fetchCurrent().catch(console.warn);
         fetchPlans().catch(console.warn);
@@ -71,6 +70,18 @@ export default function App() {
     window.addEventListener('online', handleOnline);
     if (navigator.onLine) {
       processOfflineSubscriptionQueue();
+    }
+    return () => window.removeEventListener('online', handleOnline);
+  }, []);
+
+  // Auto‑sync product mutations when online
+  useEffect(() => {
+    const handleOnline = () => {
+      useProductMutationStore.getState().syncMutations();
+    };
+    window.addEventListener('online', handleOnline);
+    if (navigator.onLine) {
+      handleOnline();
     }
     return () => window.removeEventListener('online', handleOnline);
   }, []);

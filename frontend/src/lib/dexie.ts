@@ -64,7 +64,6 @@ export interface CreditTransaction {
   synced: boolean;
 }
 
-// New subscription interfaces
 export interface SubscriptionPlan {
   id: string;
   name: string;
@@ -86,6 +85,17 @@ export interface CachedSubscription {
   is_trial: boolean;
 }
 
+// New: Product mutation queue for offline editing
+export interface ProductMutation {
+  id: string;
+  type: 'CREATE' | 'UPDATE' | 'DELETE' | 'STOCK_ADJUST';
+  productId?: string;
+  data: any;
+  createdAt: Date;
+  synced: boolean;
+  syncError?: string | null;
+}
+
 export class SmartPosDB extends Dexie {
   products!: Table<Product>;
   customers!: Table<Customer>;
@@ -93,6 +103,7 @@ export class SmartPosDB extends Dexie {
   creditTransactions!: Table<CreditTransaction>;
   subscriptionPlans!: Table<SubscriptionPlan>;
   currentSubscription!: Table<CachedSubscription>;
+  productMutations!: Table<ProductMutation>;
 
   constructor() {
     super('SmartPosDB');
@@ -136,6 +147,11 @@ export class SmartPosDB extends Dexie {
     this.version(5).stores({
       subscriptionPlans: 'id, name',
       currentSubscription: 'id',
+    });
+
+    // Version 6 – add product mutations table for offline editing
+    this.version(6).stores({
+      productMutations: 'id, type, productId, synced, createdAt',
     });
   }
 }

@@ -1,14 +1,15 @@
+// src/pages/Inventory.tsx
 import { useEffect, useState, useMemo } from 'react';
 import { useProductStore } from '../stores/productStore';
+import { useProductMutationStore } from '../stores/productMutationStore';
 import { useAuthStore } from '../stores/authStore';
 import { useUIStore } from '../stores/uiStore';
-import { db } from '../lib/dexie';
+import api from '../services/api';
 import ProductModal from '../components/ProductModal';
 import StockAdjustModal from '../components/StockAdjustModal';
 import ImportModal from '../components/ImportModal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { Button } from '../components/Button';
-import api from '../services/api';
 import {
   MagnifyingGlassIcon,
   ArrowDownTrayIcon,
@@ -38,16 +39,15 @@ const getPageNumbers = (current: number, total: number, maxButtons = 7) => {
 
 export default function Inventory() {
   const { products, loading, error, fetchProducts, syncProducts } = useProductStore();
-  const { user, token } = useAuthStore();
+  const { addMutation, syncMutations } = useProductMutationStore();
+  const { user } = useAuthStore();
   const { addToast } = useUIStore();
 
-  // Filters & pagination state
   const [search, setSearch] = useState('');
   const [showLowStockOnly, setShowLowStockOnly] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
 
-  // Modals & delete
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
   const [showProductModal, setShowProductModal] = useState(false);
   const [showStockModal, setShowStockModal] = useState(false);
@@ -59,11 +59,6 @@ export default function Inventory() {
   useEffect(() => {
     fetchProducts();
   }, [fetchProducts]);
-
-  const refreshAll = () => {
-    fetchProducts();
-    syncProducts();
-  };
 
   const activeProducts = useMemo(() => products.filter(p => p.isActive), [products]);
 
@@ -91,25 +86,22 @@ export default function Inventory() {
   }, [search, showLowStockOnly]);
 
   const totalPages = Math.ceil(filteredProducts.length / pageSize);
-
   const paginatedProducts = useMemo(() => {
     const start = (currentPage - 1) * pageSize;
     return filteredProducts.slice(start, start + pageSize);
   }, [filteredProducts, currentPage, pageSize]);
 
   const handleDelete = (id: string) => setDeleteTarget(id);
-
   const confirmDelete = async () => {
     if (!deleteTarget) return;
     setDeleting(true);
     try {
-      await api.delete(`/products/${deleteTarget}/`);
-      await db.products.delete(deleteTarget);
-      useProductStore.setState((state) => ({
-        products: state.products.filter((p) => p.id !== deleteTarget),
-      }));
-      addToast({ message: 'Product deleted', type: 'success' });
-      refreshAll();
+      await addMutation({ type: 'DELETE', productId: deleteTarget, data: {} });
+      addToast({ message: 'Product deleted (will sync when online)', type: 'success' });
+      if (navigator.onLine) {
+        syncProducts();
+        syncMutations();
+      }
     } catch (err: any) {
       addToast({ message: err.message || 'Delete failed', type: 'error' });
     } finally {
@@ -121,12 +113,10 @@ export default function Inventory() {
   const handleExport = async () => {
     setExporting(true);
     try {
-      const response = await fetch('/api/v1/products/export/', {
-        headers: { Authorization: `Bearer ${token}` },
+      const response = await api.get('/products/export/', {
+        responseType: 'blob',
       });
-      if (!response.ok) throw new Error('Export failed');
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
+      const url = window.URL.createObjectURL(new Blob([response.data]));
       const a = document.createElement('a');
       a.href = url;
       a.download = 'products.csv';
@@ -142,43 +132,31 @@ export default function Inventory() {
     }
   };
 
+  const refreshAfterOnline = () => {
+    if (navigator.onLine) {
+      syncProducts();
+      syncMutations();
+    }
+  };
+
   return (
     <div className="p-3 md:p-4">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 mb-5">
         <h1 className="text-2xl font-bold">Inventory</h1>
         <div className="flex flex-wrap gap-2">
-          <Button
-            variant="secondary"
-            onClick={handleExport}
-            disabled={exporting}
-            className="flex items-center gap-1 touch-manipulation"
-          >
+          <Button variant="secondary" onClick={handleExport} disabled={exporting} className="flex items-center gap-1">
             <ArrowDownTrayIcon className="h-4 w-4" />
             <span className="hidden sm:inline">Export</span>
           </Button>
-
-          {/* Only owners can import */}
           {user?.role === 'OWNER' && (
-            <Button
-              variant="secondary"
-              onClick={() => setShowImportModal(true)}
-              className="flex items-center gap-1 touch-manipulation"
-            >
+            <Button variant="secondary" onClick={() => setShowImportModal(true)} className="flex items-center gap-1">
               <ArrowUpTrayIcon className="h-4 w-4" />
               <span className="hidden sm:inline">Import</span>
             </Button>
           )}
-
-          {/* Only owners can add products */}
           {user?.role === 'OWNER' && (
-            <Button
-              onClick={() => {
-                setSelectedProduct(null);
-                setShowProductModal(true);
-              }}
-              className="touch-manipulation"
-            >
+            <Button onClick={() => { setSelectedProduct(null); setShowProductModal(true); }} className="touch-manipulation">
               + Add Product
             </Button>
           )}
@@ -205,7 +183,7 @@ export default function Inventory() {
         </div>
       </div>
 
-      {/* Filters + Page Size */}
+      {/* Filters */}
       <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-5">
         <div className="relative flex-1">
           <MagnifyingGlassIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
@@ -230,15 +208,10 @@ export default function Inventory() {
           <span className="text-gray-500">Show</span>
           <select
             value={pageSize}
-            onChange={(e) => {
-              setPageSize(Number(e.target.value));
-              setCurrentPage(1);
-            }}
+            onChange={(e) => { setPageSize(Number(e.target.value)); setCurrentPage(1); }}
             className="border rounded-lg px-3 py-2 bg-white"
           >
-            {PAGE_SIZES.map(size => (
-              <option key={size} value={size}>{size}</option>
-            ))}
+            {PAGE_SIZES.map(size => (<option key={size} value={size}>{size}</option>))}
           </select>
           <span className="text-gray-500">per page</span>
         </div>
@@ -249,11 +222,9 @@ export default function Inventory() {
 
       {!loading && !error && (
         <>
-          {/* Mobile: card list */}
+          {/* Mobile card view */}
           <div className="md:hidden space-y-3">
-            {paginatedProducts.length === 0 && (
-              <div className="text-center py-8 text-gray-400">No products found.</div>
-            )}
+            {paginatedProducts.length === 0 && <div className="text-center py-8 text-gray-400">No products found.</div>}
             {paginatedProducts.map((product) => (
               <div key={product.id} className="bg-white rounded-xl shadow p-4 flex flex-col gap-2">
                 <div className="flex justify-between items-start">
@@ -261,53 +232,20 @@ export default function Inventory() {
                     <h3 className="font-semibold text-gray-900">{product.name}</h3>
                     {product.sku && <p className="text-xs text-gray-500 mt-0.5">SKU: {product.sku}</p>}
                   </div>
-                  <span
-                    className={`text-sm font-bold ${
-                      product.currentStock <= product.lowStockThreshold ? 'text-red-600' : 'text-gray-700'
-                    }`}
-                  >
+                  <span className={`text-sm font-bold ${product.currentStock <= product.lowStockThreshold ? 'text-red-600' : 'text-gray-700'}`}>
                     {product.currentStock} in stock
                   </span>
                 </div>
                 <div className="flex justify-between items-center text-sm">
-                  <div>
-                    <span className="text-gray-500">Sell: </span>
-                    <span className="font-medium">GHS {Number(product.sellingPrice).toFixed(2)}</span>
-                  </div>
-                  <div>
-                    <span className="text-gray-500">Cost: </span>
-                    <span className="font-medium">GHS {Number(product.costPrice).toFixed(2)}</span>
-                  </div>
+                  <div><span className="text-gray-500">Sell: </span><span className="font-medium">GHS {Number(product.sellingPrice).toFixed(2)}</span></div>
+                  <div><span className="text-gray-500">Cost: </span><span className="font-medium">GHS {Number(product.costPrice).toFixed(2)}</span></div>
                 </div>
-
-                {/* Actions – only owners get edit/stock/delete buttons */}
                 <div className="flex gap-2 mt-1">
                   {user?.role === 'OWNER' ? (
                     <>
-                      <button
-                        onClick={() => {
-                          setSelectedProduct(product);
-                          setShowProductModal(true);
-                        }}
-                        className="flex-1 py-2 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 touch-manipulation"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => {
-                          setSelectedProduct(product);
-                          setShowStockModal(true);
-                        }}
-                        className="flex-1 py-2 text-sm font-medium text-green-600 bg-green-50 rounded-lg hover:bg-green-100 touch-manipulation"
-                      >
-                        Stock
-                      </button>
-                      <button
-                        onClick={() => handleDelete(product.id)}
-                        className="flex-1 py-2 text-sm font-medium text-red-600 bg-red-50 rounded-lg hover:bg-red-100 touch-manipulation"
-                      >
-                        Delete
-                      </button>
+                      <button onClick={() => { setSelectedProduct(product); setShowProductModal(true); }} className="flex-1 py-2 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg">Edit</button>
+                      <button onClick={() => { setSelectedProduct(product); setShowStockModal(true); }} className="flex-1 py-2 text-sm font-medium text-green-600 bg-green-50 rounded-lg">Stock</button>
+                      <button onClick={() => handleDelete(product.id)} className="flex-1 py-2 text-sm font-medium text-red-600 bg-red-50 rounded-lg">Delete</button>
                     </>
                   ) : (
                     <div className="flex-1 text-center py-2 text-sm text-gray-400">View only</div>
@@ -317,7 +255,7 @@ export default function Inventory() {
             ))}
           </div>
 
-          {/* Desktop: table view */}
+          {/* Desktop table view */}
           <div className="hidden md:block overflow-x-auto bg-white rounded-xl shadow">
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
@@ -338,41 +276,16 @@ export default function Inventory() {
                     <td className="px-6 py-4">GHS {Number(product.sellingPrice).toFixed(2)}</td>
                     <td className="px-6 py-4 text-gray-500">GHS {Number(product.costPrice).toFixed(2)}</td>
                     <td className="px-6 py-4">
-                      <span
-                        className={
-                          product.currentStock <= product.lowStockThreshold ? 'text-red-600 font-bold' : ''
-                        }
-                      >
+                      <span className={product.currentStock <= product.lowStockThreshold ? 'text-red-600 font-bold' : ''}>
                         {product.currentStock}
                       </span>
                     </td>
                     <td className="px-6 py-4 space-x-2">
                       {user?.role === 'OWNER' ? (
                         <>
-                          <button
-                            onClick={() => {
-                              setSelectedProduct(product);
-                              setShowProductModal(true);
-                            }}
-                            className="text-blue-600 hover:underline touch-manipulation"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => {
-                              setSelectedProduct(product);
-                              setShowStockModal(true);
-                            }}
-                            className="text-green-600 hover:underline touch-manipulation"
-                          >
-                            Stock
-                          </button>
-                          <button
-                            onClick={() => handleDelete(product.id)}
-                            className="text-red-600 hover:underline touch-manipulation"
-                          >
-                            Delete
-                          </button>
+                          <button onClick={() => { setSelectedProduct(product); setShowProductModal(true); }} className="text-blue-600 hover:underline">Edit</button>
+                          <button onClick={() => { setSelectedProduct(product); setShowStockModal(true); }} className="text-green-600 hover:underline">Stock</button>
+                          <button onClick={() => handleDelete(product.id)} className="text-red-600 hover:underline">Delete</button>
                         </>
                       ) : (
                         <span className="text-gray-400 text-sm">View only</span>
@@ -381,17 +294,13 @@ export default function Inventory() {
                   </tr>
                 ))}
                 {paginatedProducts.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="text-center py-8 text-gray-400">
-                      No products found.
-                    </td>
-                  </tr>
+                  <tr><td colSpan={6} className="text-center py-8 text-gray-400">No products found.</td></tr>
                 )}
               </tbody>
             </table>
           </div>
 
-          {/* Pagination Controls */}
+          {/* Pagination */}
           {filteredProducts.length > 0 && (
             <div className="flex items-center justify-between mt-4 flex-wrap gap-3">
               <p className="text-sm text-gray-500">
@@ -399,35 +308,23 @@ export default function Inventory() {
                 {Math.min(currentPage * pageSize, filteredProducts.length)} of {filteredProducts.length}
               </p>
               <div className="flex items-center gap-1">
-                <button
-                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                  disabled={currentPage === 1}
-                  className="p-2 rounded-lg border hover:bg-gray-100 disabled:opacity-40 touch-manipulation"
-                >
+                <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="p-2 rounded-lg border hover:bg-gray-100 disabled:opacity-40">
                   <ChevronLeftIcon className="h-5 w-5" />
                 </button>
                 {getPageNumbers(currentPage, totalPages).map((page, idx) =>
                   page === 'ellipsis' ? (
-                    <span key={`ellipsis-${idx}`} className="px-2 py-1 text-sm text-gray-400">
-                      …
-                    </span>
+                    <span key={`ellipsis-${idx}`} className="px-2 py-1 text-sm text-gray-400">…</span>
                   ) : (
                     <button
                       key={page}
                       onClick={() => setCurrentPage(page)}
-                      className={`px-3 py-1 rounded-lg text-sm font-medium touch-manipulation ${
-                        page === currentPage ? 'bg-green-600 text-white' : 'border hover:bg-gray-100'
-                      }`}
+                      className={`px-3 py-1 rounded-lg text-sm font-medium ${page === currentPage ? 'bg-green-600 text-white' : 'border hover:bg-gray-100'}`}
                     >
                       {page}
                     </button>
                   )
                 )}
-                <button
-                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                  disabled={currentPage === totalPages}
-                  className="p-2 rounded-lg border hover:bg-gray-100 disabled:opacity-40 touch-manipulation"
-                >
+                <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="p-2 rounded-lg border hover:bg-gray-100 disabled:opacity-40">
                   <ChevronRightIcon className="h-5 w-5" />
                 </button>
               </div>
@@ -436,14 +333,14 @@ export default function Inventory() {
         </>
       )}
 
-      {/* Modals */}
+      {/* Modals – no unnecessary re‑fetching */}
       {showProductModal && (
         <ProductModal
           product={selectedProduct}
           onClose={() => setShowProductModal(false)}
           onSuccess={() => {
             setShowProductModal(false);
-            refreshAll();
+            refreshAfterOnline();
           }}
         />
       )}
@@ -453,7 +350,7 @@ export default function Inventory() {
           onClose={() => setShowStockModal(false)}
           onSuccess={() => {
             setShowStockModal(false);
-            refreshAll();
+            refreshAfterOnline();
           }}
         />
       )}
@@ -462,7 +359,7 @@ export default function Inventory() {
           onClose={() => setShowImportModal(false)}
           onSuccess={() => {
             setShowImportModal(false);
-            refreshAll();
+            refreshAfterOnline();
           }}
         />
       )}

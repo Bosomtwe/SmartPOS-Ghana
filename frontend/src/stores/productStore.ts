@@ -58,6 +58,12 @@ interface ProductState {
   searchProducts: (query: string) => Product[];
   updateProductStock: (productId: string, delta: number) => void;
   fetchLowStockAlerts: () => Promise<Product[]>;
+  // New optimistic methods for offline mutations
+  addProductOptimistic: (product: Product) => void;
+  updateProductOptimistic: (id: string, data: Partial<Product>) => void;
+  deleteProductOptimistic: (id: string) => void;
+  adjustStockOptimistic: (id: string, delta: number, reason?: string) => void;
+  updateProductAfterSync: (localId: string, serverProduct: any) => Promise<void>;
 }
 
 export const useProductStore = create<ProductState>((set, get) => ({
@@ -126,6 +132,7 @@ export const useProductStore = create<ProductState>((set, get) => ({
   },
 
   getProductById: (id) => get().products.find(p => p.id === id),
+
   searchProducts: (query) => {
     const lower = query.toLowerCase();
     return get().products.filter(p =>
@@ -133,6 +140,7 @@ export const useProductStore = create<ProductState>((set, get) => ({
       (p.sku && p.sku.toLowerCase().includes(lower))
     );
   },
+
   updateProductStock: (productId, delta) => {
     set((state) => ({
       products: state.products.map(p =>
@@ -142,5 +150,42 @@ export const useProductStore = create<ProductState>((set, get) => ({
     const updated = get().products.find(p => p.id === productId);
     if (updated) db.products.put(updated);
   },
+
   fetchLowStockAlerts: async () => get().products.filter(p => p.currentStock <= p.lowStockThreshold && p.isActive),
+
+  // ---------- Optimistic methods for offline editing ----------
+  addProductOptimistic: (product) => {
+    set((state) => ({ products: [product, ...state.products] }));
+    db.products.add(product).catch(console.error);
+  },
+
+  updateProductOptimistic: (id, data) => {
+    set((state) => ({
+      products: state.products.map(p => p.id === id ? { ...p, ...data } : p)
+    }));
+    db.products.update(id, data).catch(console.error);
+  },
+
+  deleteProductOptimistic: (id) => {
+    set((state) => ({ products: state.products.filter(p => p.id !== id) }));
+    db.products.delete(id).catch(console.error);
+  },
+
+  adjustStockOptimistic: (id, delta, _reason) => {
+    set((state) => ({
+      products: state.products.map(p =>
+        p.id === id ? { ...p, currentStock: Math.max(0, p.currentStock + delta) } : p
+      )
+    }));
+    const product = get().products.find(p => p.id === id);
+    if (product) db.products.update(id, { currentStock: product.currentStock }).catch(console.error);
+  },
+
+  updateProductAfterSync: async (localId, serverProduct) => {
+    const camelProduct = toCamelCase(serverProduct);
+    await db.products.put(camelProduct);
+    set((state) => ({
+      products: state.products.map(p => p.id === localId ? camelProduct : p)
+    }));
+  },
 }));

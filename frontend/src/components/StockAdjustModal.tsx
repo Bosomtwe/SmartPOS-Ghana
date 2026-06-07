@@ -1,6 +1,6 @@
 // src/components/StockAdjustModal.tsx
 import { useState } from 'react';
-import { useInventoryStore } from '../stores/inventoryStore';
+import { useProductMutationStore } from '../stores/productMutationStore';
 import { Button } from './Button';
 
 interface Props {
@@ -10,7 +10,7 @@ interface Props {
 }
 
 export default function StockAdjustModal({ product, onClose, onSuccess }: Props) {
-  const { adjustStock } = useInventoryStore();
+  const { addMutation } = useProductMutationStore();
   const [quantityStr, setQuantityStr] = useState('0');
   const [reason, setReason] = useState('');
   const [loading, setLoading] = useState(false);
@@ -24,11 +24,7 @@ export default function StockAdjustModal({ product, onClose, onSuccess }: Props)
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const quantity = parseInt(quantityStr, 10);
-    if (isNaN(quantity)) {
-      setError('Please enter a valid number.');
-      return;
-    }
-    if (quantity === 0) {
+    if (isNaN(quantity) || quantity === 0) {
       setError('Quantity must be non-zero to adjust stock.');
       return;
     }
@@ -36,7 +32,11 @@ export default function StockAdjustModal({ product, onClose, onSuccess }: Props)
     setLoading(true);
     setError('');
     try {
-      await adjustStock(product.id, quantity, reason);
+      await addMutation({
+        type: 'STOCK_ADJUST',
+        productId: product.id,
+        data: { quantity, reason },
+      });
       onSuccess();
     } catch (err: any) {
       setError(err.response?.data?.error || err.message || 'Stock adjustment failed');
@@ -54,7 +54,6 @@ export default function StockAdjustModal({ product, onClose, onSuccess }: Props)
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Quick adjustment buttons */}
           <div className="flex flex-wrap gap-2">
             {[-10, -5, -1, 1, 5, 10].map((delta) => (
               <button
@@ -62,9 +61,7 @@ export default function StockAdjustModal({ product, onClose, onSuccess }: Props)
                 type="button"
                 onClick={() => handleQuickAdjust(delta)}
                 className={`px-3 py-1.5 text-sm font-medium rounded-full border ${
-                  delta < 0
-                    ? 'border-red-200 hover:bg-red-50 text-red-600'
-                    : 'border-green-200 hover:bg-green-50 text-green-600'
+                  delta < 0 ? 'border-red-200 hover:bg-red-50 text-red-600' : 'border-green-200 hover:bg-green-50 text-green-600'
                 }`}
               >
                 {delta > 0 ? '+' : ''}{delta}
@@ -72,7 +69,6 @@ export default function StockAdjustModal({ product, onClose, onSuccess }: Props)
             ))}
           </div>
 
-          {/* Quantity input */}
           <div>
             <label className="block text-sm font-medium mb-1">
               Quantity (positive to add, negative to subtract)
@@ -88,7 +84,6 @@ export default function StockAdjustModal({ product, onClose, onSuccess }: Props)
             />
           </div>
 
-          {/* Reason */}
           <div>
             <label className="block text-sm font-medium mb-1">Reason (optional)</label>
             <input
@@ -100,9 +95,7 @@ export default function StockAdjustModal({ product, onClose, onSuccess }: Props)
             />
           </div>
 
-          {error && (
-            <div className="p-2 bg-red-50 text-red-600 text-sm rounded-lg">{error}</div>
-          )}
+          {error && <div className="p-2 bg-red-50 text-red-600 text-sm rounded-lg">{error}</div>}
 
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="secondary" type="button" onClick={onClose}>

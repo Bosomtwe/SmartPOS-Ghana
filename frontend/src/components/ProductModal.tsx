@@ -1,15 +1,15 @@
 // src/components/ProductModal.tsx
 import { useState, useEffect } from 'react';
-import { useInventoryStore } from '../stores/inventoryStore';
+import { useProductMutationStore } from '../stores/productMutationStore';
 
 interface Props {
-  product?: any; // if defined, edit mode
+  product?: any;
   onClose: () => void;
   onSuccess: () => void;
 }
 
 export default function ProductModal({ product, onClose, onSuccess }: Props) {
-  const { createProduct, updateProduct } = useInventoryStore();
+  const { addMutation } = useProductMutationStore();
   const [form, setForm] = useState({
     name: '',
     sku: '',
@@ -23,7 +23,6 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
 
   useEffect(() => {
     if (product) {
-      console.log('[ProductModal] Loading product for edit:', product);
       setForm({
         name: product.name || '',
         sku: product.sku || '',
@@ -44,7 +43,6 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
     setLoading(true);
     setError('');
 
-    // Prepare clean data
     const data = {
       name: form.name.trim(),
       sku: form.sku.trim() || null,
@@ -54,32 +52,27 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
       low_stock_threshold: Number(form.low_stock_threshold),
     };
 
-    console.group('[ProductModal] Submitting');
-    console.log('Product exists?', !!product);
-    console.log('Data being sent:', data);
-    
     try {
       if (product) {
-        await updateProduct(product.id, data);
+        await addMutation({
+          type: 'UPDATE',
+          productId: product.id,
+          data,
+        });
       } else {
-        await createProduct(data);
+        await addMutation({
+          type: 'CREATE',
+          data: { ...data, id: crypto.randomUUID() },
+        });
       }
-      console.log('Submit successful');
       onSuccess();
     } catch (err: any) {
-      console.error('Submit failed:', err);
-      // Extract user-friendly error message from response
       let errorMessage = 'An error occurred';
-      if (err.response?.data?.error) {
-        errorMessage = err.response.data.error;
-      } else if (err.response?.data?.detail) {
-        errorMessage = err.response.data.detail;
-      } else if (err.message) {
-        errorMessage = err.message;
-      }
+      if (err.response?.data?.error) errorMessage = err.response.data.error;
+      else if (err.response?.data?.detail) errorMessage = err.response.data.detail;
+      else if (err.message) errorMessage = err.message;
       setError(errorMessage);
     } finally {
-      console.groupEnd();
       setLoading(false);
     }
   };
@@ -92,67 +85,27 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
         <form onSubmit={handleSubmit}>
           <div className="mb-2">
             <label className="block text-sm font-medium">Name *</label>
-            <input
-              type="text"
-              name="name"
-              value={form.name}
-              onChange={handleChange}
-              required
-              className="border p-2 w-full rounded"
-            />
+            <input type="text" name="name" value={form.name} onChange={handleChange} required className="border p-2 w-full rounded" />
           </div>
           <div className="mb-2">
             <label className="block text-sm font-medium">SKU (Barcode)</label>
-            <input
-              type="text"
-              name="sku"
-              value={form.sku}
-              onChange={handleChange}
-              className="border p-2 w-full rounded"
-            />
+            <input type="text" name="sku" value={form.sku} onChange={handleChange} className="border p-2 w-full rounded" />
           </div>
           <div className="mb-2">
             <label className="block text-sm font-medium">Cost Price</label>
-            <input
-              type="number"
-              step="0.01"
-              name="cost_price"
-              value={form.cost_price}
-              onChange={handleChange}
-              className="border p-2 w-full rounded"
-            />
+            <input type="number" step="0.01" name="cost_price" value={form.cost_price} onChange={handleChange} className="border p-2 w-full rounded" />
           </div>
           <div className="mb-2">
             <label className="block text-sm font-medium">Selling Price *</label>
-            <input
-              type="number"
-              step="0.01"
-              name="selling_price"
-              value={form.selling_price}
-              onChange={handleChange}
-              required
-              className="border p-2 w-full rounded"
-            />
+            <input type="number" step="0.01" name="selling_price" value={form.selling_price} onChange={handleChange} required className="border p-2 w-full rounded" />
           </div>
           <div className="mb-2">
             <label className="block text-sm font-medium">Current Stock</label>
-            <input
-              type="number"
-              name="current_stock"
-              value={form.current_stock}
-              onChange={handleChange}
-              className="border p-2 w-full rounded"
-            />
+            <input type="number" name="current_stock" value={form.current_stock} onChange={handleChange} className="border p-2 w-full rounded" />
           </div>
           <div className="mb-4">
             <label className="block text-sm font-medium">Low Stock Threshold</label>
-            <input
-              type="number"
-              name="low_stock_threshold"
-              value={form.low_stock_threshold}
-              onChange={handleChange}
-              className="border p-2 w-full rounded"
-            />
+            <input type="number" name="low_stock_threshold" value={form.low_stock_threshold} onChange={handleChange} className="border p-2 w-full rounded" />
           </div>
           <div className="flex justify-end space-x-2">
             <button type="button" onClick={onClose} className="px-4 py-2 border rounded">Cancel</button>

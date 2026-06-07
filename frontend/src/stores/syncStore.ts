@@ -5,6 +5,7 @@ import api from '../services/api';
 import { useUIStore } from './uiStore';
 import { useCustomerStore } from './customerStore';
 import { useProductStore } from './productStore';
+import { useProductMutationStore } from './productMutationStore';
 
 const BATCH_SIZE = 50;
 
@@ -214,6 +215,13 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         await useCustomerStore.getState().refreshLocalBalances();
       } catch (e) {
         console.error('Failed to refresh customer balances', e);
+      }
+
+      // Sync queued product mutations after a successful sale sync
+      try {
+        await useProductMutationStore.getState().syncMutations();
+      } catch (e) {
+        console.error('Failed to sync product mutations after sale sync', e);
       }
 
       const finalSales = await db.sales.toArray();
