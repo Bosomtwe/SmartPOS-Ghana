@@ -225,6 +225,7 @@ EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True') == 'True'
 EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER')          # your Gmail address
 EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD')  # generate from Google Account → Security → App passwords
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'noreply@smartpos.com')
+EMAIL_TIMEOUT = int(os.environ.get('EMAIL_TIMEOUT', 5))   # ✅ add this line
 
 # If any critical email setting is missing, fallback to console backend (to avoid crashes)
 if not all([EMAIL_HOST_USER, EMAIL_HOST_PASSWORD]):

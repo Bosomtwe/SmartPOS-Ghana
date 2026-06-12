@@ -16,7 +16,7 @@ from django.conf import settings
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
-from django.db import transaction
+from django.db import transaction, IntegrityError  # ✅ added IntegrityError
 import logging
 from django.utils.crypto import get_random_string
 
@@ -31,6 +31,7 @@ class IsSuperUser(permissions.BasePermission):
         return request.user and request.user.is_superuser
 
 
+# ==================== FIXED REGISTER VIEW ====================
 class RegisterView(generics.CreateAPIView):
     permission_classes = [permissions.AllowAny]
     serializer_class = RegisterSerializer
@@ -40,6 +41,7 @@ class RegisterView(generics.CreateAPIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
+        # Phone uniqueness check (extra safety)
         if User.objects.filter(phone=data['phone']).exists():
             return Response(
                 {"detail": {"phone": ["A user with this phone number already exists."]}},
@@ -51,15 +53,33 @@ class RegisterView(generics.CreateAPIView):
             address=data.get('address', '')
         )
 
+        # Convert empty string email to None to avoid unique constraint violation
         email = data.get('email')
-        user = User.objects.create_user(
-            phone=data['phone'],
-            password=data['password'],
-            shop=shop,
-            role='OWNER',
-            is_active=True,
-            email=email
-        )
+        if email == '':
+            email = None
+
+        try:
+            user = User.objects.create_user(
+                phone=data['phone'],
+                password=data['password'],
+                shop=shop,
+                role='OWNER',
+                is_active=True,
+                email=email
+            )
+        except IntegrityError as e:
+            # Check for duplicate email error
+            if 'email' in str(e).lower():
+                return Response(
+                    {"detail": "A user with this email already exists."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            # Other integrity errors (should not happen, but handle gracefully)
+            return Response(
+                {"detail": "Registration failed. Please check your details."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         shop.owner = user
         shop.save()
 
@@ -180,7 +200,6 @@ class ForgotPasswordView(APIView):
         try:
             user = User.objects.get(email=email, is_active=True)
         except User.DoesNotExist:
-            # Always return the same message for security
             return Response({'detail': 'If an account with that email exists, a reset link has been sent.'})
 
         if not user.email:
@@ -211,7 +230,6 @@ class ForgotPasswordView(APIView):
             logger.info(f"Password reset email sent to {user.email}")
         except Exception as e:
             logger.error(f"Failed to send reset email: {str(e)}")
-            # ✅ User‑friendly error – no technical details
             return Response(
                 {'detail': 'Unable to send reset email at this time. Please contact support or try again later.'},
                 status=500
