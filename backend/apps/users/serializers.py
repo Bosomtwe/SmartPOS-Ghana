@@ -9,9 +9,12 @@ class UserSerializer(serializers.ModelSerializer):
         read_only_fields = ('shop',)
 
 class ShopSerializer(serializers.ModelSerializer):
+    owner_phone = serializers.CharField(source='owner.phone', read_only=True)
+    owner_id = serializers.UUIDField(source='owner.id', read_only=True)
+
     class Meta:
         model = Shop
-        fields = ('id', 'name', 'address')
+        fields = ('id', 'name', 'address', 'is_active', 'owner_phone', 'owner_id')
 
 class RegisterSerializer(serializers.Serializer):
     shop_name = serializers.CharField(max_length=255)

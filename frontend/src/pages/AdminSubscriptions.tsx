@@ -6,12 +6,13 @@ import { useUIStore } from '../stores/uiStore';
 import api from '../services/api';
 import { Button } from '../components/Button';
 import { Modal } from '../components/Modal';
-import { ArrowPathIcon, PlusIcon, PencilIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { ArrowPathIcon, PlusIcon, PencilIcon, TrashIcon, ClipboardDocumentIcon, CheckIcon } from '@heroicons/react/24/outline';
 
 interface Shop {
   id: string;
   name: string;
   owner_phone?: string | null;
+  owner_id?: string | null;
   is_active: boolean;
 }
 
@@ -81,7 +82,27 @@ export default function AdminSubscriptions() {
   });
   const [planLoading, setPlanLoading] = useState(false);
 
-  if (!user?.is_superuser) return <div className="p-4 text-center">Access denied. Superuser only.</div>;
+  // Password reset states
+  const [resettingUserId, setResettingUserId] = useState<string | null>(null);
+  const [resetResult, setResetResult] = useState<{ phone: string; newPassword: string } | null>(null);
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [sendingLink, setSendingLink] = useState<string | null>(null);
+  const [resetLink, setResetLink] = useState<string | null>(null);
+  const [showResetLinkModal, setShowResetLinkModal] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
+
+  if (!user?.is_superuser) {
+    return (
+      <div className="p-4 text-center">
+        <p className="text-red-600">Access denied. Superuser only.</p>
+        <p className="text-sm text-gray-500 mt-2">Your user role: {user?.role || 'unknown'}</p>
+        <Link to="/" className="inline-block mt-4 text-green-600 underline">
+          Back to Dashboard
+        </Link>
+      </div>
+    );
+  }
 
   const fetchSubscriptions = async (showRefreshState = false) => {
     if (showRefreshState) setRefreshing(true);
@@ -248,44 +269,86 @@ export default function AdminSubscriptions() {
     }
   };
 
-  // ✅ FIXED: Optimistic update + response sync, no extra GET to revert
   const toggleShopActive = async (shopId: string, currentActive: boolean) => {
     try {
-      // Immediate optimistic update
       setShops(prev =>
         prev.map(shop =>
           shop.id === shopId ? { ...shop, is_active: !currentActive } : shop
         )
       );
-
-      // Send PATCH request
       const response = await api.patch(`/admin/shops/${shopId}/`, { is_active: !currentActive });
       const { is_active: newStatus } = response.data;
-
-      // Ensure local state matches server response
       setShops(prev =>
         prev.map(shop =>
           shop.id === shopId ? { ...shop, is_active: newStatus } : shop
         )
       );
-
       addToast({ message: `Shop ${newStatus ? 'activated' : 'deactivated'} successfully`, type: 'success' });
-
-      // Refresh subscriptions list (but not shops list to avoid overwrite)
       await fetchSubscriptions();
     } catch (err: any) {
       addToast({ message: err.response?.data?.detail || 'Update failed', type: 'error' });
-      // Revert optimistic update by re-fetching shops only on error
       await fetchShops();
+    }
+  };
+
+  // Random password reset (existing)
+  const handleResetOwnerPassword = async (userId: string) => {
+    setResettingUserId(userId);
+    try {
+      const response = await api.post(`/admin/reset-password/${userId}/`);
+      setResetResult({
+        phone: response.data.phone,
+        newPassword: response.data.new_password,
+      });
+      setShowResetModal(true);
+      addToast({ message: 'Password reset successfully', type: 'success' });
+    } catch (err: any) {
+      addToast({ message: err.response?.data?.error || 'Reset failed', type: 'error' });
+    } finally {
+      setResettingUserId(null);
+    }
+  };
+
+  // Send reset link – now shows a modal with the link and copy button
+  const handleSendResetLink = async (userId: string) => {
+    setSendingLink(userId);
+    try {
+      const response = await api.post(`/admin/send-reset-link/${userId}/`);
+      const { message, reset_url } = response.data;
+      setResetLink(reset_url);
+      setShowResetLinkModal(true);
+      addToast({ message: message || 'Reset link generated', type: 'success' });
+    } catch (err: any) {
+      addToast({ message: err.response?.data?.error || 'Failed to send reset link', type: 'error' });
+    } finally {
+      setSendingLink(null);
+    }
+  };
+
+  const copyToClipboard = () => {
+    if (resetResult?.newPassword) {
+      navigator.clipboard.writeText(resetResult.newPassword);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+      addToast({ message: 'Password copied to clipboard', type: 'success', duration: 2000 });
+    }
+  };
+
+  const copyResetLink = () => {
+    if (resetLink) {
+      navigator.clipboard.writeText(resetLink);
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2000);
+      addToast({ message: 'Reset link copied to clipboard', type: 'success', duration: 2000 });
     }
   };
 
   const formatDate = (dateStr: string) => new Date(dateStr).toLocaleDateString();
 
   return (
-    <div className="p-4 max-w-7xl mx-auto">
+    <div className="p-3 md:p-4 max-w-7xl mx-auto">
       <div className="mb-4">
-        <Link to="/" className="inline-flex items-center text-sm text-gray-600 hover:text-green-600">
+        <Link to="/" className="inline-flex items-center text-sm text-gray-600 hover:text-green-600 min-h-[44px]">
           <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
           </svg>
@@ -299,7 +362,12 @@ export default function AdminSubscriptions() {
           {lastUpdated && (
             <span className="text-xs text-gray-400">Updated: {lastUpdated.toLocaleTimeString()}</span>
           )}
-          <Button onClick={handleRefresh} variant="secondary" disabled={refreshing} className="inline-flex items-center gap-2">
+          <Button
+            onClick={handleRefresh}
+            variant="secondary"
+            disabled={refreshing}
+            className="inline-flex items-center gap-2 min-h-[44px]"
+          >
             <ArrowPathIcon className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
             Refresh
           </Button>
@@ -307,11 +375,11 @@ export default function AdminSubscriptions() {
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-gray-200 mb-6">
-        <nav className="flex gap-4">
+      <div className="border-b border-gray-200 mb-6 overflow-x-auto">
+        <nav className="flex gap-4 min-w-max">
           <button
             onClick={() => setActiveTab('subscriptions')}
-            className={`pb-2 px-1 text-sm font-medium ${
+            className={`pb-2 px-1 text-sm font-medium min-h-[44px] ${
               activeTab === 'subscriptions'
                 ? 'border-b-2 border-green-600 text-green-600'
                 : 'text-gray-500 hover:text-gray-700'
@@ -321,7 +389,7 @@ export default function AdminSubscriptions() {
           </button>
           <button
             onClick={() => setActiveTab('plans')}
-            className={`pb-2 px-1 text-sm font-medium ${
+            className={`pb-2 px-1 text-sm font-medium min-h-[44px] ${
               activeTab === 'plans'
                 ? 'border-b-2 border-green-600 text-green-600'
                 : 'text-gray-500 hover:text-gray-700'
@@ -331,7 +399,7 @@ export default function AdminSubscriptions() {
           </button>
           <button
             onClick={() => { setActiveTab('shops'); fetchShops(); }}
-            className={`pb-2 px-1 text-sm font-medium ${
+            className={`pb-2 px-1 text-sm font-medium min-h-[44px] ${
               activeTab === 'shops'
                 ? 'border-b-2 border-green-600 text-green-600'
                 : 'text-gray-500 hover:text-gray-700'
@@ -348,42 +416,93 @@ export default function AdminSubscriptions() {
           {loading && !refreshing ? (
             <div className="text-center py-8">Loading subscriptions...</div>
           ) : (
-            <div className="overflow-x-auto bg-white rounded-xl shadow">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Shop</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Owner</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Plan</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Expires</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {subscriptions.map((sub) => (
-                    <tr key={sub.id} className="hover:bg-gray-50">
-                      <td className="px-6 py-4 text-sm font-medium">{sub.shop?.name || 'Unknown'}</td>
-                      <td className="px-6 py-4 text-sm text-gray-500">{sub.shop?.owner_phone || '—'}</td>
-                      <td className="px-6 py-4 text-sm">{sub.plan?.name || sub.plan_name}</td>
-                      <td className="px-6 py-4 text-sm">{sub.end_date ? formatDate(sub.end_date) : '—'}</td>
-                      <td className="px-6 py-4">
-                        <span className={`px-2 py-1 text-xs rounded-full ${sub.is_active ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-                          {sub.is_active ? 'Active' : 'Expired'}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 text-right space-x-2">
-                        <button onClick={() => handleEdit(sub)} className="text-blue-600 hover:underline">Edit</button>
-                        <button onClick={() => handleActivate(sub.shop.id)} className="text-green-600 hover:underline">Activate</button>
-                      </td>
+            <>
+              {/* Mobile: Card layout */}
+              <div className="md:hidden space-y-4">
+                {subscriptions.length === 0 && (
+                  <div className="text-center py-8 text-gray-400">No subscriptions found.</div>
+                )}
+                {subscriptions.map((sub) => (
+                  <div key={sub.id} className="bg-white rounded-xl shadow p-4 border border-gray-100">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <h3 className="font-semibold text-gray-900">{sub.shop?.name || 'Unknown'}</h3>
+                        <p className="text-xs text-gray-500">Owner: {sub.shop?.owner_phone || '—'}</p>
+                      </div>
+                      <span className={`px-2 py-1 text-xs rounded-full ${sub.is_active ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                        {sub.is_active ? 'Active' : 'Expired'}
+                      </span>
+                    </div>
+                    <div className="mt-2 text-sm">
+                      <p><span className="text-gray-500">Plan:</span> <span className="font-medium">{sub.plan?.name || sub.plan_name}</span></p>
+                      <p><span className="text-gray-500">Expires:</span> {sub.end_date ? formatDate(sub.end_date) : '—'}</p>
+                    </div>
+                    <div className="flex gap-2 mt-3">
+                      <button
+                        onClick={() => handleEdit(sub)}
+                        className="flex-1 py-2 text-sm bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 active:bg-blue-200 touch-manipulation"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => handleActivate(sub.shop.id)}
+                        className="flex-1 py-2 text-sm bg-green-50 text-green-600 rounded-lg hover:bg-green-100 active:bg-green-200 touch-manipulation"
+                      >
+                        Activate
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Desktop: Table layout */}
+              <div className="hidden md:block overflow-x-auto bg-white rounded-xl shadow">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Shop</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Owner</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Plan</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Expires</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
                     </tr>
-                  ))}
-                  {subscriptions.length === 0 && (
-                    <tr><td colSpan={6} className="px-6 py-8 text-center text-gray-400">No subscriptions found.</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {subscriptions.map((sub) => (
+                      <tr key={sub.id} className="hover:bg-gray-50">
+                        <td className="px-6 py-4 text-sm font-medium">{sub.shop?.name || 'Unknown'}</td>
+                        <td className="px-6 py-4 text-sm text-gray-500">{sub.shop?.owner_phone || '—'}</td>
+                        <td className="px-6 py-4 text-sm">{sub.plan?.name || sub.plan_name}</td>
+                        <td className="px-6 py-4 text-sm">{sub.end_date ? formatDate(sub.end_date) : '—'}</td>
+                        <td className="px-6 py-4">
+                          <span className={`px-2 py-1 text-xs rounded-full ${sub.is_active ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                            {sub.is_active ? 'Active' : 'Expired'}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-right space-x-2">
+                          <button
+                            onClick={() => handleEdit(sub)}
+                            className="px-3 py-1 text-sm bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => handleActivate(sub.shop.id)}
+                            className="px-3 py-1 text-sm bg-green-50 text-green-600 rounded-lg hover:bg-green-100"
+                          >
+                            Activate
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                    {subscriptions.length === 0 && (
+                      <tr><td colSpan={6} className="px-6 py-8 text-center text-gray-400">No subscriptions found.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </>
       )}
@@ -392,7 +511,7 @@ export default function AdminSubscriptions() {
       {activeTab === 'plans' && (
         <div>
           <div className="flex justify-end mb-4">
-            <Button onClick={handleCreatePlan} className="inline-flex items-center gap-1">
+            <Button onClick={handleCreatePlan} className="inline-flex items-center gap-1 min-h-[44px]">
               <PlusIcon className="h-4 w-4" /> Add Plan
             </Button>
           </div>
@@ -417,11 +536,21 @@ export default function AdminSubscriptions() {
                     <td className="px-6 py-4 text-sm">{plan.is_trial_plan ? 'Yes' : 'No'}</td>
                     <td className="px-6 py-4 text-sm">{plan.is_active ? '✅' : '❌'}</td>
                     <td className="px-6 py-4 text-right space-x-2">
-                      <button onClick={() => handleEditPlan(plan)} className="text-blue-600 hover:underline">
-                        <PencilIcon className="h-4 w-4 inline" /> Edit
+                      <button
+                        onClick={() => handleEditPlan(plan)}
+                        className="text-blue-600 hover:underline inline-flex items-center gap-1 min-h-[44px] px-2"
+                        title="Edit plan"
+                      >
+                        <PencilIcon className="h-4 w-4" />
+                        <span className="sr-only">Edit</span>
                       </button>
-                      <button onClick={() => handleDeletePlan(plan.id)} className="text-red-600 hover:underline ml-3">
-                        <TrashIcon className="h-4 w-4 inline" /> Delete
+                      <button
+                        onClick={() => handleDeletePlan(plan.id)}
+                        className="text-red-600 hover:underline inline-flex items-center gap-1 min-h-[44px] px-2"
+                        title="Delete plan"
+                      >
+                        <TrashIcon className="h-4 w-4" />
+                        <span className="sr-only">Delete</span>
                       </button>
                     </td>
                   </tr>
@@ -435,7 +564,7 @@ export default function AdminSubscriptions() {
         </div>
       )}
 
-      {/* Shops Tab */}
+      {/* Shops Tab with both password reset buttons */}
       {activeTab === 'shops' && (
         <div className="overflow-x-auto bg-white rounded-xl shadow">
           <table className="min-w-full divide-y divide-gray-200">
@@ -458,16 +587,36 @@ export default function AdminSubscriptions() {
                     </span>
                   </td>
                   <td className="px-6 py-4 text-right">
-                    <button
-                      onClick={() => toggleShopActive(shop.id, shop.is_active)}
-                      className={`px-3 py-1 text-sm rounded ${
-                        shop.is_active
-                          ? 'bg-red-600 hover:bg-red-700 text-white'
-                          : 'bg-green-600 hover:bg-green-700 text-white'
-                      }`}
-                    >
-                      {shop.is_active ? 'Deactivate' : 'Activate'}
-                    </button>
+                    <div className="flex items-center justify-end gap-2 flex-wrap">
+                      <button
+                        onClick={() => toggleShopActive(shop.id, shop.is_active)}
+                        className={`px-3 py-1 text-sm rounded min-h-[44px] ${
+                          shop.is_active
+                            ? 'bg-red-600 hover:bg-red-700 text-white'
+                            : 'bg-green-600 hover:bg-green-700 text-white'
+                        }`}
+                      >
+                        {shop.is_active ? 'Deactivate' : 'Activate'}
+                      </button>
+                      {shop.owner_id && (
+                        <>
+                          <button
+                            onClick={() => handleResetOwnerPassword(shop.owner_id!)}
+                            disabled={resettingUserId === shop.owner_id}
+                            className="px-3 py-1 text-sm bg-yellow-600 hover:bg-yellow-700 text-white rounded min-h-[44px]"
+                          >
+                            {resettingUserId === shop.owner_id ? 'Resetting...' : 'Random Password'}
+                          </button>
+                          <button
+                            onClick={() => handleSendResetLink(shop.owner_id!)}
+                            disabled={sendingLink === shop.owner_id}
+                            className="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded min-h-[44px]"
+                          >
+                            {sendingLink === shop.owner_id ? 'Sending...' : 'Send Reset Link'}
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -479,7 +628,7 @@ export default function AdminSubscriptions() {
         </div>
       )}
 
-      {/* Modals */}
+      {/* Edit Subscription Modal */}
       <Modal isOpen={showEditModal} onClose={() => setShowEditModal(false)} title="Edit Subscription">
         <div className="space-y-4">
           <div>
@@ -519,6 +668,7 @@ export default function AdminSubscriptions() {
         </div>
       </Modal>
 
+      {/* Activate Subscription Modal */}
       <Modal isOpen={showActivateModal} onClose={() => setShowActivateModal(false)} title="Activate Subscription">
         <div className="space-y-4">
           <div>
@@ -558,6 +708,7 @@ export default function AdminSubscriptions() {
         </div>
       </Modal>
 
+      {/* Create/Edit Plan Modal */}
       <Modal isOpen={showPlanModal} onClose={() => setShowPlanModal(false)} title={editingPlan ? 'Edit Plan' : 'Create Plan'}>
         <div className="space-y-4 max-h-[70vh] overflow-y-auto">
           <div>
@@ -660,6 +811,69 @@ export default function AdminSubscriptions() {
             <Button variant="secondary" onClick={() => setShowPlanModal(false)}>Cancel</Button>
             <Button onClick={savePlan} disabled={planLoading}>{planLoading ? 'Saving...' : 'Save Plan'}</Button>
           </div>
+        </div>
+      </Modal>
+
+      {/* Random Password Modal */}
+      <Modal
+        isOpen={showResetModal}
+        onClose={() => { setShowResetModal(false); setCopied(false); }}
+        title="Password Reset Successful"
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-gray-600">A new password has been generated for the owner:</p>
+          <div className="bg-gray-50 p-3 rounded-lg">
+            <p><strong>Phone:</strong> {resetResult?.phone}</p>
+            <div className="flex items-center gap-2 mt-2">
+              <strong>New Password:</strong>
+              <code className="bg-gray-100 px-2 py-1 rounded font-mono text-sm">{resetResult?.newPassword}</code>
+              <button
+                onClick={copyToClipboard}
+                className="p-1 text-gray-500 hover:text-green-600 transition-colors"
+                title="Copy password"
+              >
+                {copied ? <CheckIcon className="h-4 w-4 text-green-600" /> : <ClipboardDocumentIcon className="h-4 w-4" />}
+              </button>
+            </div>
+          </div>
+          <p className="text-xs text-red-600">⚠️ Copy this password and share it securely with the shop owner.</p>
+          <div className="flex justify-end"><Button onClick={() => setShowResetModal(false)}>Close</Button></div>
+        </div>
+      </Modal>
+
+      {/* Reset Link Modal (NEW) */}
+      <Modal
+        isOpen={showResetLinkModal}
+        onClose={() => {
+          setShowResetLinkModal(false);
+          setLinkCopied(false);
+        }}
+        title="Password Reset Link"
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-gray-600">
+            Share this link with the owner to reset their password:
+          </p>
+          <div className="bg-gray-50 p-3 rounded-lg break-all">
+            <code className="text-xs font-mono break-all">{resetLink}</code>
+          </div>
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={copyResetLink}
+              className="px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2"
+            >
+              {linkCopied ? (
+                <CheckIcon className="h-4 w-4" />
+              ) : (
+                <ClipboardDocumentIcon className="h-4 w-4" />
+              )}
+              {linkCopied ? 'Copied!' : 'Copy Link'}
+            </button>
+            <Button variant="secondary" onClick={() => setShowResetLinkModal(false)}>Close</Button>
+          </div>
+          <p className="text-xs text-red-600">
+            ⚠️ This link expires in 24 hours. Share it securely.
+          </p>
         </div>
       </Modal>
     </div>

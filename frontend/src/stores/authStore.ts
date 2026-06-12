@@ -26,7 +26,7 @@ interface AuthState {
   shop: Shop | null;
   login: (phone: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
-  setAuth: (token: string, refreshToken: string, user: User, shop: Shop) => void;
+  setAuth: (token: string, refreshToken: string, user: User, shop: Shop) => Promise<void>;
   setAccessToken: (token: string) => void;
 }
 
@@ -74,6 +74,12 @@ export const useAuthStore = create<AuthState>()(
           await db.creditTransactions.clear();
         }
 
+        // ✅ Clear product mutations on cashier login
+        if (user.role !== 'OWNER') {
+          await db.productMutations.clear();
+          console.log('[Auth] Cleared product mutations for cashier');
+        }
+
         localStorage.setItem('shopId', shop.id);
         console.log('[authStore] shopId saved to localStorage:', shop.id);
 
@@ -85,14 +91,19 @@ export const useAuthStore = create<AuthState>()(
         await db.customers.clear();
         await db.sales.clear();
         await db.creditTransactions.clear();
+        await db.productMutations.clear(); // ✅ Also clear mutations
         localStorage.removeItem('shopId');
         set({ token: null, refreshToken: null, user: null, shop: null });
         delete api.defaults.headers.common['Authorization'];
         console.log('[authStore] logged out, shopId removed');
       },
 
-      setAuth: (token, refreshToken, user, shop) => {
+      setAuth: async (token, refreshToken, user, shop) => {
         localStorage.setItem('shopId', shop.id);
+        // ✅ Clear product mutations for cashiers
+        if (user.role !== 'OWNER') {
+          await db.productMutations.clear();
+        }
         set({ token, refreshToken, user, shop });
         api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
         console.log('[authStore] setAuth, shopId saved:', shop.id);

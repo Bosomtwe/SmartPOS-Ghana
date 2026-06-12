@@ -46,7 +46,6 @@ const applyMutationToLocalStore = (mutation: Omit<ProductMutation, 'id' | 'creat
 
   if (mutation.type === 'CREATE' && mutation.data) {
     const camelData = toCamelCaseMutationData(mutation.data);
-    // Explicitly construct Product to satisfy TypeScript
     const newProduct: Product = {
       id: mutation.data.id || crypto.randomUUID(),
       name: camelData.name || '',
@@ -83,6 +82,13 @@ export const useProductMutationStore = create<ProductMutationState>((set, get) =
   },
 
   addMutation: async (mutation) => {
+    const { user } = useAuthStore.getState();
+    // ✅ Block cashiers from creating mutations
+    if (user?.role !== 'OWNER') {
+      console.warn('[productMutation] Cashier cannot create mutations');
+      return;
+    }
+
     const id = crypto.randomUUID();
     const now = new Date();
 
@@ -104,6 +110,13 @@ export const useProductMutationStore = create<ProductMutationState>((set, get) =
   },
 
   syncMutations: async () => {
+    const { user } = useAuthStore.getState();
+    // ✅ Block cashiers from syncing mutations
+    if (user?.role !== 'OWNER') {
+      console.warn('[productMutation] Cashier cannot sync mutations');
+      return;
+    }
+
     if (get().isSyncing) return;
     set({ isSyncing: true });
 

@@ -4,7 +4,7 @@ import { useProductStore } from '../stores/productStore';
 import { useProductMutationStore } from '../stores/productMutationStore';
 import { useAuthStore } from '../stores/authStore';
 import { useUIStore } from '../stores/uiStore';
-import api from '../services/api';
+import api from '../services/api';  // needed for online export
 import ProductModal from '../components/ProductModal';
 import StockAdjustModal from '../components/StockAdjustModal';
 import ImportModal from '../components/ImportModal';
@@ -36,6 +36,38 @@ const getPageNumbers = (current: number, total: number, maxButtons = 7) => {
   pages.push(total);
   return pages;
 };
+
+/**
+ * Removes any column whose header (case‑insensitive, trimmed) contains "cost_price".
+ * Also strips UTF-8 BOM and handles extra spaces.
+ */
+function removeCostPriceColumnFromCSV(csvText: string): string {
+  let lines = csvText.split(/\r?\n/);
+  if (lines.length === 0) return csvText;
+
+  let firstLine = lines[0];
+  if (firstLine.charCodeAt(0) === 0xFEFF) {
+    firstLine = firstLine.slice(1);
+  }
+
+  const headers = firstLine.split(',').map(h => h.trim().toLowerCase());
+  const costIndex = headers.findIndex(h => h.includes('cost_price'));
+  if (costIndex === -1) return csvText;
+
+  const newHeaders = headers.filter((_, idx) => idx !== costIndex).join(',');
+
+  const newLines = [newHeaders];
+  for (let i = 1; i < lines.length; i++) {
+    const row = lines[i].split(',');
+    if (row.length > costIndex) {
+      row.splice(costIndex, 1);
+      newLines.push(row.join(','));
+    } else {
+      newLines.push(lines[i]);
+    }
+  }
+  return newLines.join('\n');
+}
 
 export default function Inventory() {
   const { products, loading, error, fetchProducts, syncProducts } = useProductStore();
@@ -100,7 +132,10 @@ export default function Inventory() {
       addToast({ message: 'Product deleted (will sync when online)', type: 'success' });
       if (navigator.onLine) {
         syncProducts();
-        syncMutations();
+        // ✅ Only sync mutations if owner
+        if (user?.role === 'OWNER') {
+          syncMutations();
+        }
       }
     } catch (err: any) {
       addToast({ message: err.message || 'Delete failed', type: 'error' });
@@ -110,32 +145,74 @@ export default function Inventory() {
     }
   };
 
+  // ✅ HYBRID EXPORT: online → server, offline → local generation
   const handleExport = async () => {
     setExporting(true);
     try {
-      const response = await api.get('/products/export/', {
-        responseType: 'blob',
-      });
-      const url = window.URL.createObjectURL(new Blob([response.data]));
+      let csvText: string;
+
+      if (navigator.onLine) {
+        // Online: fetch fresh CSV from the server
+        const response = await api.get('/products/export/', {
+          responseType: 'text',
+        });
+        csvText = response.data;
+
+        // If cashier, strip the cost_price column (server may still send it)
+        if (user?.role !== 'OWNER') {
+          csvText = removeCostPriceColumnFromCSV(csvText);
+        }
+      } else {
+        // Offline: generate CSV from local store (activeProducts)
+        const isOwner = user?.role === 'OWNER';
+        const headers = isOwner
+          ? ['name', 'sku', 'cost_price', 'selling_price', 'current_stock', 'low_stock_threshold']
+          : ['name', 'sku', 'selling_price', 'current_stock', 'low_stock_threshold'];
+
+        const rows = activeProducts.map(p => {
+          const escapedName = `"${p.name.replace(/"/g, '""')}"`;
+          const baseRow = [
+            escapedName,
+            p.sku || '',
+            p.sellingPrice.toFixed(2),
+            p.currentStock,
+            p.lowStockThreshold,
+          ];
+          if (isOwner) {
+            // Insert cost_price after sku (index 2)
+            baseRow.splice(2, 0, p.costPrice.toFixed(2));
+          }
+          return baseRow.join(',');
+        });
+        csvText = [headers.join(','), ...rows].join('\n');
+      }
+
+      // Download the CSV
+      const blob = new Blob([csvText], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'products.csv';
+      a.download = `products_${new Date().toISOString().slice(0, 19)}.csv`;
       document.body.appendChild(a);
       a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
       addToast({ message: 'Export successful', type: 'success' });
     } catch (err) {
+      console.error(err);
       addToast({ message: 'Export failed', type: 'error' });
     } finally {
       setExporting(false);
     }
   };
 
+  // ✅ Only sync mutations if owner – prevents cashier loops
   const refreshAfterOnline = () => {
     if (navigator.onLine) {
       syncProducts();
-      syncMutations();
+      if (user?.role === 'OWNER') {
+        syncMutations();
+      }
     }
   };
 
@@ -163,7 +240,7 @@ export default function Inventory() {
         </div>
       </div>
 
-      {/* Summary Cards */}
+      {/* Summary Cards – Cashiers see only Products & Stock Qty */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
         <div className="bg-white rounded-xl shadow p-3 md:p-4">
           <p className="text-xs md:text-sm text-gray-500 uppercase tracking-wide">Total Products</p>
@@ -173,14 +250,18 @@ export default function Inventory() {
           <p className="text-xs md:text-sm text-gray-500 uppercase tracking-wide">Total Stock Qty</p>
           <p className="text-xl md:text-2xl font-bold text-gray-900 mt-1">{formatNumber(totalQuantity)}</p>
         </div>
-        <div className="bg-white rounded-xl shadow p-3 md:p-4">
-          <p className="text-xs md:text-sm text-gray-500 uppercase tracking-wide">Total Cost Value</p>
-          <p className="text-xl md:text-2xl font-bold text-green-600 mt-1">{formatCurrency(totalCost)}</p>
-        </div>
-        <div className="bg-white rounded-xl shadow p-3 md:p-4">
-          <p className="text-xs md:text-sm text-gray-500 uppercase tracking-wide">Total Retail Value</p>
-          <p className="text-xl md:text-2xl font-bold text-green-600 mt-1">{formatCurrency(totalRetail)}</p>
-        </div>
+        {user?.role === 'OWNER' && (
+          <div className="bg-white rounded-xl shadow p-3 md:p-4">
+            <p className="text-xs md:text-sm text-gray-500 uppercase tracking-wide">Total Cost Value</p>
+            <p className="text-xl md:text-2xl font-bold text-green-600 mt-1">{formatCurrency(totalCost)}</p>
+          </div>
+        )}
+        {user?.role === 'OWNER' && (
+          <div className="bg-white rounded-xl shadow p-3 md:p-4">
+            <p className="text-xs md:text-sm text-gray-500 uppercase tracking-wide">Total Retail Value</p>
+            <p className="text-xl md:text-2xl font-bold text-green-600 mt-1">{formatCurrency(totalRetail)}</p>
+          </div>
+        )}
       </div>
 
       {/* Filters */}
@@ -238,7 +319,9 @@ export default function Inventory() {
                 </div>
                 <div className="flex justify-between items-center text-sm">
                   <div><span className="text-gray-500">Sell: </span><span className="font-medium">GHS {Number(product.sellingPrice).toFixed(2)}</span></div>
-                  <div><span className="text-gray-500">Cost: </span><span className="font-medium">GHS {Number(product.costPrice).toFixed(2)}</span></div>
+                  {user?.role === 'OWNER' && (
+                    <div><span className="text-gray-500">Cost: </span><span className="font-medium">GHS {Number(product.costPrice).toFixed(2)}</span></div>
+                  )}
                 </div>
                 <div className="flex gap-2 mt-1">
                   {user?.role === 'OWNER' ? (
@@ -263,7 +346,9 @@ export default function Inventory() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">SKU</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Selling Price</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Cost Price</th>
+                  {user?.role === 'OWNER' && (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Cost Price</th>
+                  )}
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Stock</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                 </tr>
@@ -274,7 +359,9 @@ export default function Inventory() {
                     <td className="px-6 py-4">{product.name}</td>
                     <td className="px-6 py-4 text-gray-500">{product.sku || '—'}</td>
                     <td className="px-6 py-4">GHS {Number(product.sellingPrice).toFixed(2)}</td>
-                    <td className="px-6 py-4 text-gray-500">GHS {Number(product.costPrice).toFixed(2)}</td>
+                    {user?.role === 'OWNER' && (
+                      <td className="px-6 py-4 text-gray-500">GHS {Number(product.costPrice).toFixed(2)}</td>
+                    )}
                     <td className="px-6 py-4">
                       <span className={product.currentStock <= product.lowStockThreshold ? 'text-red-600 font-bold' : ''}>
                         {product.currentStock}
@@ -333,7 +420,7 @@ export default function Inventory() {
         </>
       )}
 
-      {/* Modals – no unnecessary re‑fetching */}
+      {/* Modals */}
       {showProductModal && (
         <ProductModal
           product={selectedProduct}

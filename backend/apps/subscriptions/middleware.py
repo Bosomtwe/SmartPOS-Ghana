@@ -8,7 +8,10 @@ class SubscriptionRequiredMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
-        if request.user.is_authenticated and not request.user.is_superuser:
+        # ✅ Only apply subscription checks to OWNERS (not superusers, not cashiers)
+        if (request.user.is_authenticated 
+            and not request.user.is_superuser 
+            and request.user.role == 'OWNER'):
             shop = request.user.shop
             if shop:
                 # Log current state

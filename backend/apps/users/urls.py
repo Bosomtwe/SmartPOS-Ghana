@@ -6,7 +6,8 @@ from .views import (
     CreateCashierView, ResetCashierPasswordView, ListCashiersView,
     ForgotPasswordView, ResetPasswordView,
     DeactivateCashierView, ReactivateCashierView,
-    AdminShopListView, AdminShopUpdateView   # ADD THESE
+    AdminShopListView, AdminShopUpdateView,
+    AdminResetUserPasswordView, AdminSendResetLinkView,   # <-- add this
 )
 
 urlpatterns = [
@@ -28,4 +29,10 @@ urlpatterns = [
     # Admin shop management (superuser only)
     path('admin/shops/', AdminShopListView.as_view(), name='admin-shops-list'),
     path('admin/shops/<uuid:shop_id>/', AdminShopUpdateView.as_view(), name='admin-shop-update'),
+
+    # Admin password reset (superuser only)
+    path('admin/reset-password/<uuid:user_id>/', AdminResetUserPasswordView.as_view(), name='admin-reset-password'),
+
+    # Admin send reset link (superuser only)
+    path('admin/send-reset-link/<uuid:user_id>/', AdminSendResetLinkView.as_view(), name='admin-send-reset-link'),
 ]

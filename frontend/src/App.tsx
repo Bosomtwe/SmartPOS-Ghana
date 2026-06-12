@@ -106,8 +106,34 @@ export default function App() {
           <Route path="/reports" element={<PrivateRoute><AppLayout><Reports /></AppLayout></PrivateRoute>} />
           <Route path="/settings" element={<PrivateRoute><AppLayout><Settings /></AppLayout></PrivateRoute>} />
           <Route path="/analytics" element={<PrivateRoute><AppLayout><AnalyticsPage /></AppLayout></PrivateRoute>} />
-          <Route path="/subscription" element={<PrivateRoute><Subscription /></PrivateRoute>} />
-          <Route path="/admin/subscriptions" element={<PrivateRoute><AdminSubscriptions /></PrivateRoute>} />
+
+          {/* ✅ Subscription route – only owners can access; cashiers redirected to dashboard */}
+          <Route
+            path="/subscription"
+            element={
+              <PrivateRoute>
+                {user?.role === 'OWNER' ? (
+                  <Subscription />
+                ) : (
+                  <Navigate to="/" replace />
+                )}
+              </PrivateRoute>
+            }
+          />
+
+          {/* ✅ Admin subscriptions – only superusers can access */}
+          <Route
+            path="/admin/subscriptions"
+            element={
+              <PrivateRoute>
+                {user?.is_superuser ? (
+                  <AdminSubscriptions />
+                ) : (
+                  <Navigate to="/" replace />
+                )}
+              </PrivateRoute>
+            }
+          />
 
           {/* Catch-all */}
           <Route path="*" element={<Navigate to="/login" replace />} />

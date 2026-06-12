@@ -18,6 +18,7 @@ from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.db import transaction
 import logging
+from django.utils.crypto import get_random_string
 
 # ✅ Import subscription permission
 from apps.subscriptions.permissions import MaxUsersPermission
@@ -167,6 +168,7 @@ class ResetCashierPasswordView(APIView):
         })
 
 
+# ==================== IMPROVED FORGOT PASSWORD VIEW ====================
 class ForgotPasswordView(APIView):
     permission_classes = [permissions.AllowAny]
 
@@ -178,25 +180,42 @@ class ForgotPasswordView(APIView):
         try:
             user = User.objects.get(email=email, is_active=True)
         except User.DoesNotExist:
+            # Always return the same message for security
+            return Response({'detail': 'If an account with that email exists, a reset link has been sent.'})
+
+        if not user.email:
             return Response({'detail': 'If an account with that email exists, a reset link has been sent.'})
 
         token_generator = PasswordResetTokenGenerator()
         token = token_generator.make_token(user)
         uid = urlsafe_base64_encode(force_bytes(user.pk))
-
         reset_url = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
 
-        send_mail(
-            subject="SmartPOS – Reset your password",
-            message=(
-                f"Hi {user.phone},\n\n"
-                f"Use the link below to reset your password:\n{reset_url}\n\n"
-                f"This link expires in 24 hours."
-            ),
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[email],
-            fail_silently=False,
-        )
+        html_message = f"""
+        <p>Hi {user.phone},</p>
+        <p>Use the link below to reset your password:</p>
+        <p><a href="{reset_url}">{reset_url}</a></p>
+        <p>This link expires in 24 hours.</p>
+        <p>If you did not request this, please ignore this email.</p>
+        """
+
+        try:
+            send_mail(
+                subject="SmartPOS – Reset your password",
+                message="",
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                fail_silently=False,
+                html_message=html_message,
+            )
+            logger.info(f"Password reset email sent to {user.email}")
+        except Exception as e:
+            logger.error(f"Failed to send reset email: {str(e)}")
+            # ✅ User‑friendly error – no technical details
+            return Response(
+                {'detail': 'Unable to send reset email at this time. Please contact support or try again later.'},
+                status=500
+            )
 
         return Response({'detail': 'If an account with that email exists, a reset link has been sent.'})
 
@@ -310,3 +329,93 @@ class AdminShopUpdateView(APIView):
             logger.error(f"Audit log failed: {e}")
 
         return Response({'id': str(shop.id), 'is_active': shop.is_active})
+
+
+# ==================== ADMIN PASSWORD RESET ====================
+class AdminResetUserPasswordView(APIView):
+    permission_classes = [IsAuthenticated, IsSuperUser]
+
+    def post(self, request, user_id):
+        try:
+            user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({'error': 'User not found'}, status=404)
+
+        new_password = request.data.get('new_password')
+        if not new_password:
+            new_password = get_random_string(length=10)
+        user.set_password(new_password)
+        user.save()
+
+        try:
+            from apps.audit.utils import log_action
+            from apps.audit.models import AuditLog
+            log_action(
+                shop=user.shop,
+                user=request.user,
+                action='ADMIN_RESET_PASSWORD',
+                details={'target_user_id': str(user.id), 'target_phone': user.phone},
+                request=request
+            )
+        except Exception as e:
+            logger.error(f"Audit log failed: {e}")
+
+        return Response({
+            'message': 'Password reset successfully',
+            'user_id': str(user.id),
+            'phone': user.phone,
+            'new_password': new_password
+        })
+
+
+# ==================== IMPROVED ADMIN SEND RESET LINK ====================
+class AdminSendResetLinkView(APIView):
+    permission_classes = [IsAuthenticated, IsSuperUser]
+
+    def post(self, request, user_id):
+        try:
+            user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({'error': 'User not found'}, status=404)
+
+        if not user.email:
+            return Response(
+                {'error': 'User has no email address. Please set an email first via Settings or admin panel.'},
+                status=400
+            )
+
+        token_generator = PasswordResetTokenGenerator()
+        token = token_generator.make_token(user)
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        reset_url = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
+
+        html_message = f"""
+        <p>Hi {user.phone},</p>
+        <p>A superuser has initiated a password reset for your account.</p>
+        <p>Click the link below to set a new password:</p>
+        <p><a href="{reset_url}">{reset_url}</a></p>
+        <p>This link expires in 24 hours.</p>
+        <p>If you did not request this, please ignore this email.</p>
+        """
+
+        email_sent = False
+        try:
+            send_mail(
+                subject="SmartPOS – Password Reset Request",
+                message="",
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                fail_silently=False,
+                html_message=html_message,
+            )
+            logger.info(f"Password reset link sent to {user.email} by superuser {request.user.id}")
+            email_sent = True
+        except Exception as e:
+            logger.error(f"Failed to send reset email: {str(e)}")
+            # Still return the link so superuser can copy it manually
+
+        return Response({
+            'message': f'Password reset link {"sent to " + user.email if email_sent else "generated (email failed – copy the link below)"}',
+            'reset_url': reset_url,
+            'email_sent': email_sent
+        })
