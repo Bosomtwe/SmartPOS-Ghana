@@ -35,9 +35,12 @@ function AppLayout({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-gray-50">
       <Sidebar />
       <div className="lg:ml-64 pb-16 lg:pb-0">
-        {children}
+        {/* Desktop content padding */}
+        <div className="lg:p-6">
+          {children}
+        </div>
       </div>
-      <BottomNav />
+      {/* BottomNav removed from here – moved outside AppLayout */}
     </div>
   );
 }
@@ -98,16 +101,88 @@ export default function App() {
           <Route path="/logout" element={<LogoutPage />} />
 
           {/* Protected routes */}
-          <Route path="/" element={<PrivateRoute><AppLayout><Dashboard /></AppLayout></PrivateRoute>} />
-          <Route path="/pos" element={<PrivateRoute><AppLayout><Pos /></AppLayout></PrivateRoute>} />
-          <Route path="/inventory" element={<PrivateRoute><AppLayout><Inventory /></AppLayout></PrivateRoute>} />
-          <Route path="/customers" element={<PrivateRoute><AppLayout><Customers /></AppLayout></PrivateRoute>} />
-          <Route path="/sales" element={<PrivateRoute><AppLayout><SalesHistory /></AppLayout></PrivateRoute>} />
-          <Route path="/reports" element={<PrivateRoute><AppLayout><Reports /></AppLayout></PrivateRoute>} />
-          <Route path="/settings" element={<PrivateRoute><AppLayout><Settings /></AppLayout></PrivateRoute>} />
-          <Route path="/analytics" element={<PrivateRoute><AppLayout><AnalyticsPage /></AppLayout></PrivateRoute>} />
+          <Route
+            path="/"
+            element={
+              <PrivateRoute>
+                <AppLayout>
+                  <Dashboard />
+                </AppLayout>
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/pos"
+            element={
+              <PrivateRoute>
+                <AppLayout>
+                  <Pos />
+                </AppLayout>
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/inventory"
+            element={
+              <PrivateRoute>
+                <AppLayout>
+                  <Inventory />
+                </AppLayout>
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/customers"
+            element={
+              <PrivateRoute>
+                <AppLayout>
+                  <Customers />
+                </AppLayout>
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/sales"
+            element={
+              <PrivateRoute>
+                <AppLayout>
+                  <SalesHistory />
+                </AppLayout>
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/reports"
+            element={
+              <PrivateRoute>
+                <AppLayout>
+                  <Reports />
+                </AppLayout>
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <PrivateRoute>
+                <AppLayout>
+                  <Settings />
+                </AppLayout>
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/analytics"
+            element={
+              <PrivateRoute>
+                <AppLayout>
+                  <AnalyticsPage />
+                </AppLayout>
+              </PrivateRoute>
+            }
+          />
 
-          {/* ✅ Subscription route – only owners can access; cashiers redirected to dashboard */}
+          {/* Subscription route – only owners can access; cashiers redirected to dashboard */}
           <Route
             path="/subscription"
             element={
@@ -121,7 +196,7 @@ export default function App() {
             }
           />
 
-          {/* ✅ Admin subscriptions – only superusers can access */}
+          {/* Admin subscriptions – only superusers can access */}
           <Route
             path="/admin/subscriptions"
             element={
@@ -138,6 +213,9 @@ export default function App() {
           {/* Catch-all */}
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
+
+        {/* ✅ BottomNav rendered OUTSIDE any animated layout – ensures true fixed positioning */}
+        <BottomNav />
       </ErrorBoundary>
     </BrowserRouter>
   );

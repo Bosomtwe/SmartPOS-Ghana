@@ -28,7 +28,14 @@ export const BottomNav = () => {
 
   return (
     <>
-      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 lg:hidden z-10 pb-safe-bottom">
+      <nav
+        className="fixed bottom-0 left-0 z-10 bg-white border-t border-gray-200 lg:hidden pb-safe-bottom"
+        style={{
+          width: '100vw',
+          right: 0,
+          marginLeft: 'calc(-50vw + 50%)', // counteract any parent transform/center
+        }}
+      >
         <div className="flex justify-around items-center h-16">
           {navItems.map((item) => (
             <NavLink
@@ -42,7 +49,11 @@ export const BottomNav = () => {
             >
               {({ isActive }) => (
                 <>
-                  {isActive ? <item.activeIcon className="w-6 h-6" /> : <item.icon className="w-6 h-6" />}
+                  {isActive ? (
+                    <item.activeIcon className="w-6 h-6" />
+                  ) : (
+                    <item.icon className="w-6 h-6" />
+                  )}
                   <span className="text-xs mt-1">{item.name}</span>
                 </>
               )}

@@ -15,7 +15,7 @@ export const MoreMenu = ({ isOpen, onClose }: MoreMenuProps) => {
 
   const menuItems = [
     { name: 'Sales History', path: '/sales', icon: ClipboardDocumentListIcon },
-    { name: 'Reports', path: '/reports', icon: ChartBarIcon },          // ✅ Reports link
+    { name: 'Reports', path: '/reports', icon: ChartBarIcon },
     { name: 'Settings', path: '/settings', icon: Cog6ToothIcon },
   ];
 
@@ -45,7 +45,7 @@ export const MoreMenu = ({ isOpen, onClose }: MoreMenuProps) => {
               leaveFrom="opacity-100 translate-y-0"
               leaveTo="opacity-0 translate-y-full"
             >
-              <Dialog.Panel className="w-full max-w-sm transform overflow-hidden rounded-2xl bg-white text-left align-middle shadow-xl transition-all">
+              <Dialog.Panel className="w-full max-w-sm left-0 right-0 transform overflow-hidden rounded-2xl bg-white text-left align-middle shadow-xl transition-all">
                 <div className="flex justify-between items-center p-4 border-b">
                   <Dialog.Title as="h3" className="text-lg font-semibold leading-6 text-gray-900">
                     More

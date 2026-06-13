@@ -81,11 +81,21 @@
   background: var(--bg);
 }
 
+/* Desktop layout – wider and centred */
 @media (min-width: 1126px) {
   #root {
-    width: 1126px;
-    margin: 0 auto;
+    width: 90%;
+    max-width: 1400px;
+    margin: 1rem auto;
     border-inline: 1px solid var(--border);
+    border-radius: 1.5rem;
+    box-shadow: 0 20px 35px -10px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+  }
+
+  /* Add some breathing space inside the root */
+  .min-h-screen {
+    border-radius: 1.5rem;
   }
 }
 
@@ -159,4 +169,50 @@ code {
 /* Prevent zoom on input focus (iOS) */
 input, textarea, select, button {
   font-size: 16px;
+}
+
+/* ========== FIX MOBILE BOTTOM NAVIGATION ========== */
+html,
+body,
+#root {
+  overflow-x: hidden;
+  width: 100%;
+  position: relative;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+}
+
+/* Ensure fixed elements are not affected by parent transforms */
+.fixed {
+  transform: translateZ(0);
+}
+
+/* Optional: improve touch targets on mobile */
+button,
+a,
+[role="button"] {
+  touch-action: manipulation;
+}
+
+/* ========== DESKTOP POLISH ========== */
+@media (min-width: 1024px) {
+  /* Better table readability */
+  table {
+    font-size: 0.9rem;
+  }
+  th, td {
+    padding: 0.75rem 1rem !important;
+  }
+
+  /* Slightly larger product cards on large screens */
+  .grid > div {
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+  .grid > div:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.1);
+  }
 }
