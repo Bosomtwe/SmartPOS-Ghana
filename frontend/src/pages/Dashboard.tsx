@@ -1,5 +1,5 @@
 // src/pages/Dashboard.tsx
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuthStore } from '../stores/authStore';
 import { useProductStore } from '../stores/productStore';
@@ -42,14 +42,18 @@ interface DashboardData {
   prev_profit?: number;
 }
 
+// Simple in‑memory cache with TTL (5 minutes)
+const cache = new Map<string, { data: DashboardData; timestamp: number }>();
+const CACHE_TTL = 5 * 60 * 1000;
+
 export default function Dashboard() {
   const { user } = useAuthStore();
   const { products, fetchProducts } = useProductStore();
-  const { sales, fetchSales, loading: salesLoading } = useSalesStore();
+  const { sales, fetchSales } = useSalesStore(); // ✅ removed unused salesLoading
   const { addToast } = useUIStore();
 
   const [data, setData] = useState<DashboardData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -58,7 +62,8 @@ export default function Dashboard() {
   const [startDate, setStartDate] = useState(todayStr);
   const [endDate, setEndDate] = useState(todayStr);
 
-  // Fetch products and sales on mount
+  const abortControllerRef = useRef<AbortController | null>(null);
+
   useEffect(() => {
     fetchProducts();
     fetchSales();
@@ -76,16 +81,42 @@ export default function Dashboard() {
   }, []);
 
   const loadDashboard = useCallback(
-    async (start: string, end: string) => {
-      setLoading(true);
-      setError('');
+    async (start: string, end: string, forceRefresh = false) => {
+      const cacheKey = `${start}_${end}`;
+      const cached = cache.get(cacheKey);
+      const now = Date.now();
+
+      if (cached && !forceRefresh && now - cached.timestamp < CACHE_TTL) {
+        setData(cached.data);
+        setLastUpdated(new Date(cached.timestamp));
+        setError('');
+        if (isOnline) {
+          // continue to fetch in background (stale-while-revalidate)
+        } else {
+          return;
+        }
+      } else if (!cached && !data) {
+        setLoading(true);
+      }
+
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+
       try {
         if (isOnline) {
-          const res = await api.get('/reports/dashboard/', { params: { start, end } });
-          setData(res.data);
+          const res = await api.get('/reports/dashboard/', {
+            params: { start, end },
+            signal: controller.signal,
+          });
+          const freshData = res.data;
+          cache.set(cacheKey, { data: freshData, timestamp: Date.now() });
+          setData(freshData);
           setLastUpdated(new Date());
+          setError('');
         } else {
-          // Offline: compute from local sales and products
           const filtered = sales.filter(
             (s) => s.status === 'COMPLETED' && isInRange(new Date(s.createdAt), start, end)
           );
@@ -119,17 +150,19 @@ export default function Dashboard() {
             .sort((a, b) => b.total_sold - a.total_sold)
             .slice(0, 5);
 
-          setData({
+          const offlineData: DashboardData = {
             total_sales: totalRevenue,
             profit,
             missing_cost_price: missingCostPrice,
             top_products,
             transaction_count,
             avg_sale,
-          });
+          };
+          setData(offlineData);
           setLastUpdated(new Date());
         }
       } catch (err: any) {
+        if (err.name === 'AbortError') return;
         if (!isOnline) {
           console.warn('Offline, no fresh dashboard data');
         } else {
@@ -139,20 +172,24 @@ export default function Dashboard() {
         }
       } finally {
         setLoading(false);
+        if (abortControllerRef.current === controller) {
+          abortControllerRef.current = null;
+        }
       }
     },
-    [isOnline, sales, products, addToast]
+    [isOnline, sales, products, addToast, data]
   );
 
   useEffect(() => {
-    if (!salesLoading || sales.length > 0) {
-      loadDashboard(startDate, endDate);
-    }
-  }, [loadDashboard, startDate, endDate, isOnline, salesLoading, sales.length]);
+    loadDashboard(startDate, endDate, false);
+  }, [loadDashboard, startDate, endDate, isOnline]);
 
   const handleRefresh = () => {
-    if (!isOnline) addToast({ message: 'Offline – showing cached data', type: 'info' });
-    loadDashboard(startDate, endDate);
+    if (!isOnline) {
+      addToast({ message: 'Offline – showing cached data', type: 'info' });
+      return;
+    }
+    loadDashboard(startDate, endDate, true);
   };
 
   const lowStockCount = products.filter(
@@ -168,7 +205,6 @@ export default function Dashboard() {
       ? ((data.profit - data.prev_profit) / data.prev_profit) * 100
       : null;
 
-  // Show loading only on first load (no data at all)
   if (loading && !data) {
     return (
       <div className="p-4 space-y-5 animate-pulse">
@@ -210,7 +246,6 @@ export default function Dashboard() {
 
   return (
     <div className="p-3 md:p-5 space-y-5">
-      {/* Header */}
       <div className="flex flex-col gap-3">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Dashboard</h1>
@@ -263,11 +298,8 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {lastUpdated && (
-        <p className="text-xs text-gray-400 -mt-3">Data as of {lastUpdated.toLocaleTimeString()}</p>
-      )}
+      {lastUpdated && <p className="text-xs text-gray-400 -mt-3">Data as of {lastUpdated.toLocaleTimeString()}</p>}
 
-      {/* KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <div className="bg-white p-3 sm:p-4 rounded-2xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow">
           <div className="flex items-center justify-between mb-1.5">
@@ -318,9 +350,7 @@ export default function Dashboard() {
                 <span>Missing cost prices</span>
               </div>
             )}
-            {!isOnline && (
-              <div className="text-xs text-yellow-600 mt-1">* Estimated from local data</div>
-            )}
+            {!isOnline && <div className="text-xs text-yellow-600 mt-1">* Estimated from local data</div>}
           </div>
         )}
 
@@ -352,7 +382,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Top Selling Products */}
       <div className="bg-white p-4 md:p-5 rounded-2xl shadow-sm border border-gray-100">
         <h2 className="text-base sm:text-lg font-semibold text-gray-900 mb-4">🏆 Top Selling Products</h2>
         {topProducts.length > 0 ? (
