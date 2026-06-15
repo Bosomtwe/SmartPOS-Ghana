@@ -35,12 +35,12 @@ function AppLayout({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-gray-50">
       <Sidebar />
       <div className="lg:ml-64 pb-16 lg:pb-0">
-        {/* Desktop content padding */}
         <div className="lg:p-6">
           {children}
         </div>
       </div>
-      {/* BottomNav removed from here – moved outside AppLayout */}
+      {/* BottomNav now only appears inside protected layout */}
+      <BottomNav />
     </div>
   );
 }
@@ -50,12 +50,10 @@ export default function App() {
   const { token, user } = useAuthStore();
   const { fetchCurrent, fetchPlans } = useSubscriptionStore();
 
-  // Refresh pending sales count on mount
   useEffect(() => {
     refreshPendingCount();
   }, [refreshPendingCount]);
 
-  // Background subscription caching for offline use
   useEffect(() => {
     if (token && user && !user.is_superuser && user.role === 'OWNER') {
       if (navigator.onLine) {
@@ -65,7 +63,6 @@ export default function App() {
     }
   }, [token, user, fetchCurrent, fetchPlans]);
 
-  // Process queued subscription actions when coming online
   useEffect(() => {
     const handleOnline = () => {
       processOfflineSubscriptionQueue();
@@ -77,7 +74,6 @@ export default function App() {
     return () => window.removeEventListener('online', handleOnline);
   }, []);
 
-  // Auto‑sync product mutations when online
   useEffect(() => {
     const handleOnline = () => {
       useProductMutationStore.getState().syncMutations();
@@ -93,119 +89,39 @@ export default function App() {
     <BrowserRouter>
       <ErrorBoundary>
         <Routes>
-          {/* Public routes */}
+          {/* Public routes – no BottomNav */}
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/reset-password/:uidb64/:token" element={<ResetPassword />} />
           <Route path="/logout" element={<LogoutPage />} />
 
-          {/* Protected routes */}
-          <Route
-            path="/"
-            element={
-              <PrivateRoute>
-                <AppLayout>
-                  <Dashboard />
-                </AppLayout>
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/pos"
-            element={
-              <PrivateRoute>
-                <AppLayout>
-                  <Pos />
-                </AppLayout>
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/inventory"
-            element={
-              <PrivateRoute>
-                <AppLayout>
-                  <Inventory />
-                </AppLayout>
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/customers"
-            element={
-              <PrivateRoute>
-                <AppLayout>
-                  <Customers />
-                </AppLayout>
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/sales"
-            element={
-              <PrivateRoute>
-                <AppLayout>
-                  <SalesHistory />
-                </AppLayout>
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/reports"
-            element={
-              <PrivateRoute>
-                <AppLayout>
-                  <Reports />
-                </AppLayout>
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/settings"
-            element={
-              <PrivateRoute>
-                <AppLayout>
-                  <Settings />
-                </AppLayout>
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/analytics"
-            element={
-              <PrivateRoute>
-                <AppLayout>
-                  <AnalyticsPage />
-                </AppLayout>
-              </PrivateRoute>
-            }
-          />
+          {/* Protected routes – all wrapped in AppLayout (which includes BottomNav) */}
+          <Route path="/" element={<PrivateRoute><AppLayout><Dashboard /></AppLayout></PrivateRoute>} />
+          <Route path="/pos" element={<PrivateRoute><AppLayout><Pos /></AppLayout></PrivateRoute>} />
+          <Route path="/inventory" element={<PrivateRoute><AppLayout><Inventory /></AppLayout></PrivateRoute>} />
+          <Route path="/customers" element={<PrivateRoute><AppLayout><Customers /></AppLayout></PrivateRoute>} />
+          <Route path="/sales" element={<PrivateRoute><AppLayout><SalesHistory /></AppLayout></PrivateRoute>} />
+          <Route path="/reports" element={<PrivateRoute><AppLayout><Reports /></AppLayout></PrivateRoute>} />
+          <Route path="/settings" element={<PrivateRoute><AppLayout><Settings /></AppLayout></PrivateRoute>} />
+          <Route path="/analytics" element={<PrivateRoute><AppLayout><AnalyticsPage /></AppLayout></PrivateRoute>} />
 
-          {/* Subscription route – only owners can access; cashiers redirected to dashboard */}
+          {/* Subscription – owners only */}
           <Route
             path="/subscription"
             element={
               <PrivateRoute>
-                {user?.role === 'OWNER' ? (
-                  <Subscription />
-                ) : (
-                  <Navigate to="/" replace />
-                )}
+                {user?.role === 'OWNER' ? <Subscription /> : <Navigate to="/" replace />}
               </PrivateRoute>
             }
           />
 
-          {/* Admin subscriptions – only superusers can access */}
+          {/* Admin subscriptions – superusers only */}
           <Route
             path="/admin/subscriptions"
             element={
               <PrivateRoute>
-                {user?.is_superuser ? (
-                  <AdminSubscriptions />
-                ) : (
-                  <Navigate to="/" replace />
-                )}
+                {user?.is_superuser ? <AdminSubscriptions /> : <Navigate to="/" replace />}
               </PrivateRoute>
             }
           />
@@ -213,9 +129,6 @@ export default function App() {
           {/* Catch-all */}
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
-
-        {/* ✅ BottomNav rendered OUTSIDE any animated layout – ensures true fixed positioning */}
-        <BottomNav />
       </ErrorBoundary>
     </BrowserRouter>
   );

@@ -1,5 +1,5 @@
-// src/pages/Dashboard.tsx
-import { useEffect, useState, useCallback, useRef } from 'react';
+// src/pages/Dashboard.tsx (optimized)
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuthStore } from '../stores/authStore';
 import { useProductStore } from '../stores/productStore';
@@ -42,35 +42,114 @@ interface DashboardData {
   prev_profit?: number;
 }
 
-// Simple in‑memory cache with TTL (5 minutes)
-const cache = new Map<string, { data: DashboardData; timestamp: number }>();
-const CACHE_TTL = 5 * 60 * 1000;
-
 export default function Dashboard() {
   const { user } = useAuthStore();
   const { products, fetchProducts } = useProductStore();
-  const { sales, fetchSales } = useSalesStore(); // ✅ removed unused salesLoading
+  const { sales, fetchSales } = useSalesStore();
   const { addToast } = useUIStore();
 
   const [data, setData] = useState<DashboardData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [fetchingFresh, setFetchingFresh] = useState(false);
+  const [initialLoadComplete, setInitialLoadComplete] = useState(false);
 
   const todayStr = toDateStr(new Date());
   const [startDate, setStartDate] = useState(todayStr);
   const [endDate, setEndDate] = useState(todayStr);
 
-  const abortControllerRef = useRef<AbortController | null>(null);
-
+  // 1. Load products & sales from stores (IndexedDB) as soon as possible
   useEffect(() => {
-    fetchProducts();
-    fetchSales();
+    Promise.all([fetchProducts(), fetchSales()]).finally(() => {
+      setInitialLoadComplete(true);
+    });
   }, [fetchProducts, fetchSales]);
 
+  // 2. Compute offline dashboard from current products & sales (reactive)
+  const offlineData = useMemo(() => {
+    // If still loading and no data, return null (show skeleton)
+    if (!initialLoadComplete && (products.length === 0 || sales.length === 0)) {
+      return null;
+    }
+
+    const filtered = sales.filter(
+      (s) => s.status === 'COMPLETED' && isInRange(new Date(s.createdAt), startDate, endDate)
+    );
+
+    let totalRevenue = 0;
+    let totalCost = 0;
+    let missingCostPrice = false;
+    const productSales: Record<string, number> = {};
+
+    for (const sale of filtered) {
+      totalRevenue += sale.totalAmount;
+      for (const item of sale.items) {
+        const prod = products.find((p) => p.id === item.productId);
+        if (prod) {
+          productSales[prod.name] = (productSales[prod.name] || 0) + item.quantity;
+          if (prod.costPrice != null && !isNaN(prod.costPrice)) {
+            totalCost += item.quantity * prod.costPrice;
+          } else {
+            missingCostPrice = true;
+          }
+        }
+      }
+    }
+
+    const profit = totalRevenue - totalCost;
+    const transaction_count = filtered.length;
+    const avg_sale = transaction_count > 0 ? totalRevenue / transaction_count : 0;
+
+    const top_products = Object.entries(productSales)
+      .map(([name, total_sold]) => ({ name, total_sold }))
+      .sort((a, b) => b.total_sold - a.total_sold)
+      .slice(0, 5);
+
+    return {
+      total_sales: totalRevenue,
+      profit,
+      missing_cost_price: missingCostPrice,
+      top_products,
+      transaction_count,
+      avg_sale,
+    };
+  }, [products, sales, startDate, endDate, initialLoadComplete]);
+
+  // 3. Show cached data immediately when available
   useEffect(() => {
-    const hOnline = () => setIsOnline(true);
+    if (offlineData) {
+      setData(offlineData);
+      setLastUpdated(new Date());
+    }
+  }, [offlineData]);
+
+  // 4. Background refresh (stale-while-revalidate) – only if online
+  const refreshFreshData = useCallback(async () => {
+    if (!navigator.onLine) return;
+    setFetchingFresh(true);
+    try {
+      const res = await api.get('/reports/dashboard/', { params: { start: startDate, end: endDate } });
+      setData(res.data);
+      setLastUpdated(new Date());
+    } catch (err) {
+      console.warn('[Dashboard] Fresh data fetch failed, keeping cached', err);
+    } finally {
+      setFetchingFresh(false);
+    }
+  }, [startDate, endDate]);
+
+  useEffect(() => {
+    if (initialLoadComplete && navigator.onLine) {
+      refreshFreshData();
+    }
+  }, [initialLoadComplete, refreshFreshData]);
+
+  // 5. Online/offline listener
+  useEffect(() => {
+    const hOnline = () => {
+      setIsOnline(true);
+      refreshFreshData(); // refresh when coming online
+    };
     const hOffline = () => setIsOnline(false);
     window.addEventListener('online', hOnline);
     window.addEventListener('offline', hOffline);
@@ -78,120 +157,18 @@ export default function Dashboard() {
       window.removeEventListener('online', hOnline);
       window.removeEventListener('offline', hOffline);
     };
-  }, []);
+  }, [refreshFreshData]);
 
-  const loadDashboard = useCallback(
-    async (start: string, end: string, forceRefresh = false) => {
-      const cacheKey = `${start}_${end}`;
-      const cached = cache.get(cacheKey);
-      const now = Date.now();
-
-      if (cached && !forceRefresh && now - cached.timestamp < CACHE_TTL) {
-        setData(cached.data);
-        setLastUpdated(new Date(cached.timestamp));
-        setError('');
-        if (isOnline) {
-          // continue to fetch in background (stale-while-revalidate)
-        } else {
-          return;
-        }
-      } else if (!cached && !data) {
-        setLoading(true);
-      }
-
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-      const controller = new AbortController();
-      abortControllerRef.current = controller;
-
-      try {
-        if (isOnline) {
-          const res = await api.get('/reports/dashboard/', {
-            params: { start, end },
-            signal: controller.signal,
-          });
-          const freshData = res.data;
-          cache.set(cacheKey, { data: freshData, timestamp: Date.now() });
-          setData(freshData);
-          setLastUpdated(new Date());
-          setError('');
-        } else {
-          const filtered = sales.filter(
-            (s) => s.status === 'COMPLETED' && isInRange(new Date(s.createdAt), start, end)
-          );
-
-          let totalRevenue = 0;
-          let totalCost = 0;
-          let missingCostPrice = false;
-          const productSales: Record<string, number> = {};
-
-          for (const sale of filtered) {
-            totalRevenue += sale.totalAmount;
-            for (const item of sale.items) {
-              const prod = products.find((p) => p.id === item.productId);
-              if (prod) {
-                productSales[prod.name] = (productSales[prod.name] || 0) + item.quantity;
-                if (prod.costPrice != null && !isNaN(prod.costPrice)) {
-                  totalCost += item.quantity * prod.costPrice;
-                } else {
-                  missingCostPrice = true;
-                }
-              }
-            }
-          }
-
-          const profit = totalRevenue - totalCost;
-          const transaction_count = filtered.length;
-          const avg_sale = transaction_count > 0 ? totalRevenue / transaction_count : 0;
-
-          const top_products = Object.entries(productSales)
-            .map(([name, total_sold]) => ({ name, total_sold }))
-            .sort((a, b) => b.total_sold - a.total_sold)
-            .slice(0, 5);
-
-          const offlineData: DashboardData = {
-            total_sales: totalRevenue,
-            profit,
-            missing_cost_price: missingCostPrice,
-            top_products,
-            transaction_count,
-            avg_sale,
-          };
-          setData(offlineData);
-          setLastUpdated(new Date());
-        }
-      } catch (err: any) {
-        if (err.name === 'AbortError') return;
-        if (!isOnline) {
-          console.warn('Offline, no fresh dashboard data');
-        } else {
-          const msg = err.response?.data?.detail || err.message || 'Failed to load dashboard';
-          setError(msg);
-          addToast({ message: 'Could not load dashboard data', type: 'error' });
-        }
-      } finally {
-        setLoading(false);
-        if (abortControllerRef.current === controller) {
-          abortControllerRef.current = null;
-        }
-      }
-    },
-    [isOnline, sales, products, addToast, data]
-  );
-
-  useEffect(() => {
-    loadDashboard(startDate, endDate, false);
-  }, [loadDashboard, startDate, endDate, isOnline]);
-
+  // 6. Manual refresh
   const handleRefresh = () => {
-    if (!isOnline) {
+    if (isOnline) {
+      refreshFreshData();
+    } else {
       addToast({ message: 'Offline – showing cached data', type: 'info' });
-      return;
     }
-    loadDashboard(startDate, endDate, true);
   };
 
+  // Derived values for UI
   const lowStockCount = products.filter(
     (p) => p.isActive && p.currentStock <= p.lowStockThreshold
   ).length;
@@ -205,7 +182,8 @@ export default function Dashboard() {
       ? ((data.profit - data.prev_profit) / data.prev_profit) * 100
       : null;
 
-  if (loading && !data) {
+  // Show skeleton only while initial data is being loaded from IndexedDB
+  if (!initialLoadComplete && (products.length === 0 || sales.length === 0)) {
     return (
       <div className="p-4 space-y-5 animate-pulse">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -225,19 +203,11 @@ export default function Dashboard() {
     );
   }
 
-  if (error && !data) {
+  // If there is genuinely no data (empty store and no error), show a message
+  if (!data && !initialLoadComplete) {
     return (
-      <div className="p-4">
-        <div className="bg-red-50 border border-red-200 text-red-700 px-5 py-4 rounded-2xl flex items-center gap-3">
-          <ExclamationTriangleIcon className="h-6 w-6 text-red-400 flex-shrink-0" />
-          <span className="text-sm">{error}</span>
-        </div>
-        <button
-          onClick={handleRefresh}
-          className="mt-4 inline-flex items-center gap-2 text-sm text-green-600 hover:text-green-700 font-medium"
-        >
-          <ArrowPathIcon className="h-4 w-4" /> Try again
-        </button>
+      <div className="p-4 text-center text-gray-500">
+        Loading dashboard data...
       </div>
     );
   }
@@ -246,6 +216,7 @@ export default function Dashboard() {
 
   return (
     <div className="p-3 md:p-5 space-y-5">
+      {/* Header */}
       <div className="flex flex-col gap-3">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Dashboard</h1>
@@ -283,11 +254,11 @@ export default function Dashboard() {
           <div className="flex items-center gap-2 self-end sm:self-auto">
             <button
               onClick={handleRefresh}
-              disabled={loading}
+              disabled={fetchingFresh}
               className="p-2 rounded-xl hover:bg-gray-100 text-gray-500 hover:text-green-600 transition touch-manipulation disabled:opacity-50 disabled:cursor-not-allowed"
               title={`Last updated: ${lastUpdated?.toLocaleTimeString() || 'never'}`}
             >
-              <ArrowPathIcon className={`h-5 w-5 ${loading ? 'animate-spin' : ''}`} />
+              <ArrowPathIcon className={`h-5 w-5 ${fetchingFresh ? 'animate-spin' : ''}`} />
             </button>
             {!isOnline && (
               <div className="flex items-center gap-1 bg-yellow-50 text-yellow-700 px-2.5 py-1.5 rounded-xl text-xs font-medium">
@@ -298,8 +269,11 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {lastUpdated && <p className="text-xs text-gray-400 -mt-3">Data as of {lastUpdated.toLocaleTimeString()}</p>}
+      {lastUpdated && (
+        <p className="text-xs text-gray-400 -mt-3">Data as of {lastUpdated.toLocaleTimeString()}</p>
+      )}
 
+      {/* KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <div className="bg-white p-3 sm:p-4 rounded-2xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow">
           <div className="flex items-center justify-between mb-1.5">
@@ -350,7 +324,9 @@ export default function Dashboard() {
                 <span>Missing cost prices</span>
               </div>
             )}
-            {!isOnline && <div className="text-xs text-yellow-600 mt-1">* Estimated from local data</div>}
+            {!isOnline && (
+              <div className="text-xs text-yellow-600 mt-1">* Estimated from local data</div>
+            )}
           </div>
         )}
 
@@ -382,6 +358,7 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* Top Selling Products */}
       <div className="bg-white p-4 md:p-5 rounded-2xl shadow-sm border border-gray-100">
         <h2 className="text-base sm:text-lg font-semibold text-gray-900 mb-4">🏆 Top Selling Products</h2>
         {topProducts.length > 0 ? (
