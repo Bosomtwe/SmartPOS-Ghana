@@ -1,10 +1,13 @@
-// src/pages/Dashboard.tsx (optimized)
-import { useEffect, useState, useMemo, useCallback } from 'react';
+// src/pages/Dashboard.tsx
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuthStore } from '../stores/authStore';
 import { useProductStore } from '../stores/productStore';
 import { useSalesStore } from '../stores/saleStore';
+import { useSyncStore } from '../stores/syncStore';
 import { useUIStore } from '../stores/uiStore';
+import api from '../services/api';
+import { getCashierList } from '../services/offlineUsers';
 import {
   ExclamationTriangleIcon,
   ArrowPathIcon,
@@ -14,9 +17,9 @@ import {
   CubeIcon,
   ChevronUpIcon,
   ChevronDownIcon,
+  CheckIcon,
 } from '@heroicons/react/24/outline';
 import { CloudOffIcon } from '../components/icons/CloudOffIcon';
-import api from '../services/api';
 
 const toDateStr = (d: Date) => d.toISOString().split('T')[0];
 const isInRange = (date: Date, start: string, end: string) => {
@@ -42,10 +45,87 @@ interface DashboardData {
   prev_profit?: number;
 }
 
+// Custom dropdown for filtering by user (owners + cashiers)
+const CashierDropdown = ({
+  cashiers,
+  selectedUserId,
+  onChange,
+}: {
+  cashiers: { id: string; phone: string }[];
+  selectedUserId: string | null;
+  onChange: (userId: string | null) => void;
+}) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const selectedUser = cashiers.find(c => c.id === selectedUserId);
+  const displayText = selectedUserId ? selectedUser?.phone || 'All Users' : 'All Users';
+
+  return (
+    <div className="relative w-full sm:w-auto" ref={dropdownRef}>
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-full flex items-center justify-between gap-2 border rounded-xl px-4 py-3 text-base sm:text-sm bg-white shadow-sm hover:bg-gray-50 transition-colors active:bg-gray-100"
+      >
+        <span className="truncate flex-1 text-left">{displayText}</span>
+        {isOpen ? (
+          <ChevronUpIcon className="h-4 w-4 text-gray-500 flex-shrink-0" />
+        ) : (
+          <ChevronDownIcon className="h-4 w-4 text-gray-500 flex-shrink-0" />
+        )}
+      </button>
+
+      {isOpen && (
+        <div className="absolute z-20 mt-1 w-full min-w-[180px] sm:min-w-[220px] max-w-[calc(100vw-2rem)] bg-white border rounded-xl shadow-lg max-h-60 overflow-y-auto">
+          <button
+            onClick={() => {
+              onChange(null);
+              setIsOpen(false);
+            }}
+            className={`w-full flex items-center justify-between px-4 py-3 text-left text-sm hover:bg-green-50 transition-colors ${
+              !selectedUserId ? 'bg-green-50 text-green-700 font-medium' : 'text-gray-700'
+            }`}
+          >
+            <span>All Users</span>
+            {!selectedUserId && <CheckIcon className="h-4 w-4 text-green-600" />}
+          </button>
+          {cashiers.map((c) => (
+            <button
+              key={c.id}
+              onClick={() => {
+                onChange(c.id);
+                setIsOpen(false);
+              }}
+              className={`w-full flex items-center justify-between px-4 py-3 text-left text-sm hover:bg-green-50 transition-colors ${
+                selectedUserId === c.id ? 'bg-green-50 text-green-700 font-medium' : 'text-gray-700'
+              }`}
+            >
+              <span className="truncate">{c.phone}</span>
+              {selectedUserId === c.id && <CheckIcon className="h-4 w-4 text-green-600 flex-shrink-0" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 export default function Dashboard() {
   const { user } = useAuthStore();
   const { products, fetchProducts } = useProductStore();
   const { sales, fetchSales } = useSalesStore();
+  const { pendingSales, isSyncing } = useSyncStore();
   const { addToast } = useUIStore();
 
   const [data, setData] = useState<DashboardData | null>(null);
@@ -58,21 +138,60 @@ export default function Dashboard() {
   const [startDate, setStartDate] = useState(todayStr);
   const [endDate, setEndDate] = useState(todayStr);
 
-  // 1. Load products & sales from stores (IndexedDB) as soon as possible
+  // User filter state (owners only)
+  const [users, setUsers] = useState<{ id: string; phone: string }[]>([]);
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+
+  // Track sales and pending changes for auto‑refresh
+  const prevSalesCount = useRef<number>(0);
+  const prevPendingSales = useRef<number>(0);
+  const refreshTimeoutRef = useRef<number | null>(null);
+
+  // Ref to hold the latest local transaction count for stale-check
+  const localTxnCountRef = useRef<number>(0);
+
+  // Fetch cashiers AND add owner if owner role (online / cached offline)
   useEffect(() => {
-    Promise.all([fetchProducts(), fetchSales()]).finally(() => {
+    if (user?.role === 'OWNER') {
+      getCashierList().then(setUsers).catch(console.error);
+    }
+  }, [user]);
+
+  // 1. Load products & sales from stores (IndexedDB)
+  useEffect(() => {
+    if (isSyncing) {
+      console.log('[Dashboard] Sync in progress – skipping data load');
+      return;
+    }
+    const userId = user?.role === 'CASHIER' ? user.id : undefined;
+    Promise.all([
+      fetchProducts(),
+      fetchSales(undefined, undefined, 1, userId)
+    ]).finally(() => {
       setInitialLoadComplete(true);
     });
-  }, [fetchProducts, fetchSales]);
+  }, [fetchProducts, fetchSales, user, isSyncing]);
 
-  // 2. Compute offline dashboard from current products & sales (reactive)
+  // Filter sales for cashiers or selected user (owners)
+  const filteredSales = useMemo(() => {
+    let result;
+    if (user?.role === 'CASHIER') {
+      result = sales.filter(s => s.userId === user.id);
+    } else if (user?.role === 'OWNER' && selectedUserId) {
+      result = sales.filter(s => s.userId === selectedUserId);
+    } else {
+      result = sales;
+    }
+    return result;
+  }, [sales, user, selectedUserId]);
+
+  // 2. Compute offline dashboard from current products & filtered sales
   const offlineData = useMemo(() => {
-    // If still loading and no data, return null (show skeleton)
-    if (!initialLoadComplete && (products.length === 0 || sales.length === 0)) {
+    if (!initialLoadComplete && (products.length === 0 || filteredSales.length === 0)) {
       return null;
     }
 
-    const filtered = sales.filter(
+    const filtered = filteredSales.filter(
       (s) => s.status === 'COMPLETED' && isInRange(new Date(s.createdAt), startDate, endDate)
     );
 
@@ -113,7 +232,7 @@ export default function Dashboard() {
       transaction_count,
       avg_sale,
     };
-  }, [products, sales, startDate, endDate, initialLoadComplete]);
+  }, [products, filteredSales, startDate, endDate, initialLoadComplete]);
 
   // 3. Show cached data immediately when available
   useEffect(() => {
@@ -123,12 +242,31 @@ export default function Dashboard() {
     }
   }, [offlineData]);
 
-  // 4. Background refresh (stale-while-revalidate) – only if online
-  const refreshFreshData = useCallback(async () => {
+  // 4. Keep ref in sync whenever data changes (for stale-check)
+  useEffect(() => {
+    if (data) {
+      localTxnCountRef.current = data.transaction_count;
+    }
+  }, [data]);
+
+  // 5. Background refresh (stale-while-revalidate) – only if online
+  //    Stable dependencies: startDate, endDate
+  const refreshFreshData = useCallback(async (userId?: string) => {
     if (!navigator.onLine) return;
     setFetchingFresh(true);
     try {
-      const res = await api.get('/reports/dashboard/', { params: { start: startDate, end: endDate } });
+      const params: any = { start: startDate, end: endDate };
+      if (userId) params.user_id = userId;
+
+      const res = await api.get('/reports/dashboard/', { params });
+      
+      // Prevent flicker: keep local data if server hasn't caught up yet
+      if (localTxnCountRef.current && res.data.transaction_count < localTxnCountRef.current) {
+        console.log('[Dashboard] Server data seems stale (fewer txns), keeping local');
+        setLastUpdated(new Date()); // update timestamp to reflect attempt
+        return;
+      }
+      
       setData(res.data);
       setLastUpdated(new Date());
     } catch (err) {
@@ -138,17 +276,20 @@ export default function Dashboard() {
     }
   }, [startDate, endDate]);
 
+  // Refresh when selectedUserId changes (owner selects a user)
   useEffect(() => {
     if (initialLoadComplete && navigator.onLine) {
-      refreshFreshData();
+      const userId = user?.role === 'CASHIER' ? user.id : selectedUserId || undefined;
+      refreshFreshData(userId);
     }
-  }, [initialLoadComplete, refreshFreshData]);
+  }, [initialLoadComplete, refreshFreshData, selectedUserId, user]);
 
-  // 5. Online/offline listener
+  // Online/offline listener
   useEffect(() => {
     const hOnline = () => {
       setIsOnline(true);
-      refreshFreshData(); // refresh when coming online
+      const userId = user?.role === 'CASHIER' ? user.id : selectedUserId || undefined;
+      refreshFreshData(userId);
     };
     const hOffline = () => setIsOnline(false);
     window.addEventListener('online', hOnline);
@@ -157,12 +298,41 @@ export default function Dashboard() {
       window.removeEventListener('online', hOnline);
       window.removeEventListener('offline', hOffline);
     };
-  }, [refreshFreshData]);
+  }, [refreshFreshData, user, selectedUserId]);
 
-  // 6. Manual refresh
+  // Auto‑refresh fresh data when sales count increases (online) OR pending cleared (offline)
+  useEffect(() => {
+    if (!initialLoadComplete || !isOnline) return;
+
+    const currentSalesCount = sales.length;
+    const currentPending = pendingSales;
+
+    const salesIncreased = currentSalesCount > prevSalesCount.current;
+    const pendingCleared = prevPendingSales.current > 0 && currentPending === 0;
+
+    if (salesIncreased || pendingCleared) {
+      if (refreshTimeoutRef.current !== null) {
+        clearTimeout(refreshTimeoutRef.current);
+        refreshTimeoutRef.current = null;
+      }
+
+      refreshTimeoutRef.current = setTimeout(() => {
+        console.log('[Dashboard] Sales changed – refreshing dashboard data');
+        const userId = user?.role === 'CASHIER' ? user.id : selectedUserId || undefined;
+        refreshFreshData(userId);
+        refreshTimeoutRef.current = null;
+      }, 2000);
+    }
+
+    prevSalesCount.current = currentSalesCount;
+    prevPendingSales.current = currentPending;
+  }, [sales.length, pendingSales, initialLoadComplete, isOnline, refreshFreshData, user?.role, user?.id, selectedUserId]);
+
+  // Manual refresh
   const handleRefresh = () => {
     if (isOnline) {
-      refreshFreshData();
+      const userId = user?.role === 'CASHIER' ? user.id : selectedUserId || undefined;
+      refreshFreshData(userId);
     } else {
       addToast({ message: 'Offline – showing cached data', type: 'info' });
     }
@@ -182,8 +352,8 @@ export default function Dashboard() {
       ? ((data.profit - data.prev_profit) / data.prev_profit) * 100
       : null;
 
-  // Show skeleton only while initial data is being loaded from IndexedDB
-  if (!initialLoadComplete && (products.length === 0 || sales.length === 0)) {
+  // Skeleton loading
+  if (!initialLoadComplete && (products.length === 0 || filteredSales.length === 0)) {
     return (
       <div className="p-4 space-y-5 animate-pulse">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -203,19 +373,14 @@ export default function Dashboard() {
     );
   }
 
-  // If there is genuinely no data (empty store and no error), show a message
   if (!data && !initialLoadComplete) {
-    return (
-      <div className="p-4 text-center text-gray-500">
-        Loading dashboard data...
-      </div>
-    );
+    return <div className="p-4 text-center text-gray-500">Loading dashboard data...</div>;
   }
 
   const topProducts = data?.top_products ?? [];
 
   return (
-    <div className="p-3 md:p-5 space-y-5">
+    <div className="p-3 md:p-5 space-y-5 overflow-x-hidden max-w-full">
       {/* Header */}
       <div className="flex flex-col gap-3">
         <div>
@@ -225,8 +390,8 @@ export default function Dashboard() {
           </p>
         </div>
 
-        <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-          <div className="flex flex-wrap items-center gap-2 bg-white rounded-xl border border-gray-200 p-1 shadow-sm">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2 w-full max-w-full">
+          <div className="flex flex-wrap items-center gap-2 bg-white rounded-xl border border-gray-200 p-1 shadow-sm w-full sm:w-auto">
             <input
               type="date"
               value={startDate}
@@ -250,6 +415,15 @@ export default function Dashboard() {
               Today
             </button>
           </div>
+
+          {/* Custom user dropdown – owners only (now includes owner) */}
+          {user?.role === 'OWNER' && (
+            <CashierDropdown
+              cashiers={users}
+              selectedUserId={selectedUserId}
+              onChange={setSelectedUserId}
+            />
+          )}
 
           <div className="flex items-center gap-2 self-end sm:self-auto">
             <button

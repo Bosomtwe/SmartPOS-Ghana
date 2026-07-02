@@ -28,12 +28,13 @@ class AuditLog(BaseModel):
         BACKUP_DOWNLOAD = 'BACKUP_DOWNLOAD', 'Backup Downloaded'
         BACKUP_RESTORE = 'BACKUP_RESTORE', 'Backup Restored'
         INVITE_CASHIER = 'INVITE_CASHIER', 'Cashier Invited'
+        SALE_BACKDATED = 'SALE_BACKDATED', 'Sale Backdated'  # ✅ NEW
 
     shop = models.ForeignKey(
         Shop,
         on_delete=models.CASCADE,
         related_name='audit_logs',
-        null=True,           # ← required for failed logins where shop is unknown
+        null=True,
         blank=True,
     )
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='audit_logs')
@@ -53,7 +54,6 @@ class AuditLog(BaseModel):
             models.Index(fields=['user']),
             models.Index(fields=['created_at']),
             models.Index(fields=['action', 'created_at']),
-            # ✅ Additional composite index for admin analytics queries
             models.Index(fields=['shop', 'action', 'created_at']),
         ]
 

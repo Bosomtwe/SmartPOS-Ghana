@@ -12,6 +12,8 @@ export interface Product {
   lowStockThreshold: number;
   isActive: boolean;
   shopId: string;
+  customFields: Record<string, any>;
+  initialStock?: number;
   synced?: boolean;
 }
 
@@ -28,6 +30,7 @@ export interface Sale {
   id: string;
   shopId: string;
   userId: string;
+  userPhone?: string;          // ✅ Cashier's phone at time of sale
   customerId?: string;
   totalAmount: number;
   discount: number;
@@ -42,6 +45,8 @@ export interface Sale {
   totalPaid?: number;
   balance?: number;
   idempotencyKey: string;
+  isBackdated?: boolean;
+  originalCreatedAt?: Date | null;
 }
 
 export interface SaleItem {
@@ -85,7 +90,6 @@ export interface CachedSubscription {
   is_trial: boolean;
 }
 
-// New: Product mutation queue for offline editing
 export interface ProductMutation {
   id: string;
   type: 'CREATE' | 'UPDATE' | 'DELETE' | 'STOCK_ADJUST';
@@ -108,15 +112,13 @@ export class SmartPosDB extends Dexie {
   constructor() {
     super('SmartPosDB');
 
-    // Version 1
     this.version(1).stores({
-      products: 'id, name, sku, sellingPrice, currentStock, shopId, isActive',
+      products: 'id, shopId, name, sku, customFields',
       customers: 'id, name, phone, shopId',
       sales: 'id, createdAt, synced, shopId',
       creditTransactions: 'id, customerId, createdAt, synced',
     });
 
-    // Version 2 – fixes missing fields on sales
     this.version(2).upgrade(async (tx) => {
       const salesTable = tx.table('sales');
       await salesTable.toCollection().modify((sale) => {
@@ -126,12 +128,10 @@ export class SmartPosDB extends Dexie {
       });
     });
 
-    // Version 3 – adds saleId index and compound index [saleId+type]
     this.version(3).stores({
       creditTransactions: 'id, customerId, saleId, createdAt, synced, [saleId+type]',
     });
 
-    // Version 4 – normalise missing product fields
     this.version(4).upgrade(async (tx) => {
       const productsTable = tx.table('products');
       await productsTable.toCollection().modify((product) => {
@@ -140,16 +140,15 @@ export class SmartPosDB extends Dexie {
         if (typeof product.currentStock !== 'number') product.currentStock = Number(product.currentStock) || 0;
         if (typeof product.costPrice !== 'number') product.costPrice = Number(product.costPrice) || 0;
         if (typeof product.sellingPrice !== 'number') product.sellingPrice = Number(product.sellingPrice) || 0;
+        if (product.customFields === undefined) product.customFields = {};
       });
     });
 
-    // Version 5 – add subscription tables
     this.version(5).stores({
       subscriptionPlans: 'id, name',
       currentSubscription: 'id',
     });
 
-    // Version 6 – add product mutations table for offline editing
     this.version(6).stores({
       productMutations: 'id, type, productId, synced, createdAt',
     });

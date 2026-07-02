@@ -1,3 +1,4 @@
+// src/components/ImportModal.tsx
 import { useState, type DragEvent } from 'react';
 import api from '../services/api';
 import { useUIStore } from '../stores/uiStore';
@@ -21,7 +22,6 @@ export default function ImportModal({ onClose, onSuccess }: Props) {
   const { addToast } = useUIStore();
 
   const handleFileSelection = (selectedFile: File) => {
-    // Validate file type
     const validTypes = ['text/csv', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'];
     const isValid = validTypes.includes(selectedFile.type) ||
                     selectedFile.name.endsWith('.csv') ||
@@ -34,7 +34,6 @@ export default function ImportModal({ onClose, onSuccess }: Props) {
       return;
     }
 
-    // Validate file size (max 10MB)
     if (selectedFile.size > 10 * 1024 * 1024) {
       setError('File is too large. Maximum size is 10MB.');
       setFile(null);
@@ -120,7 +119,6 @@ export default function ImportModal({ onClose, onSuccess }: Props) {
       console.error('Upload error:', err);
       let errorMsg = 'Import failed';
       if (err.response) {
-        // ✅ Friendly message for 403 Forbidden
         if (err.response.status === 403) {
           errorMsg = 'Access denied. Only the shop owner can import products.';
         } else {
@@ -171,7 +169,12 @@ export default function ImportModal({ onClose, onSuccess }: Props) {
           Upload an Excel or CSV file with the following columns:
         </p>
         <div className="bg-gray-100 p-2 rounded text-xs font-mono mb-3 break-all">
-          name, SKU (Barcode), cost_price, selling_price, current_stock, Low Stock Threshold
+          name, SKU (Barcode), cost_price, selling_price, current_stock, Low Stock Threshold, expiry, initial_stock
+        </div>
+        <div className="text-xs text-gray-500 mb-3">
+          <span className="font-bold">Required:</span> name<br />
+          <span className="font-bold">Optional:</span> all other columns (defaults: cost_price=0, selling_price=0, current_stock=0, Low Stock Threshold=5)<br />
+          <span className="font-bold">Note:</span> <code>expiry</code> and <code>initial_stock</code> are stored in custom fields.
         </div>
 
         <button

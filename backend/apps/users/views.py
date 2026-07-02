@@ -16,7 +16,7 @@ from django.conf import settings
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
-from django.db import transaction, IntegrityError  # ✅ added IntegrityError
+from django.db import transaction, IntegrityError
 import logging
 from django.utils.crypto import get_random_string
 
@@ -68,13 +68,11 @@ class RegisterView(generics.CreateAPIView):
                 email=email
             )
         except IntegrityError as e:
-            # Check for duplicate email error
             if 'email' in str(e).lower():
                 return Response(
                     {"detail": "A user with this email already exists."},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            # Other integrity errors (should not happen, but handle gracefully)
             return Response(
                 {"detail": "Registration failed. Please check your details."},
                 status=status.HTTP_400_BAD_REQUEST
@@ -326,13 +324,11 @@ class AdminShopUpdateView(APIView):
             shop.save(update_fields=['is_active', 'skip_auto_reactivation'])
             logger.info(f"[PATCH] Saved → is_active={shop.is_active}")
 
-            # Force fresh read from database
             shop.refresh_from_db()
             logger.info(f"[PATCH] After refresh_from_db: is_active={shop.is_active}")
         finally:
             clear_admin_override()
 
-        # Optional audit logging
         try:
             from apps.audit.utils import log_action
             from apps.audit.models import AuditLog
@@ -386,7 +382,6 @@ class AdminResetUserPasswordView(APIView):
         })
 
 
-# ==================== IMPROVED ADMIN SEND RESET LINK ====================
 class AdminSendResetLinkView(APIView):
     permission_classes = [IsAuthenticated, IsSuperUser]
 
@@ -430,10 +425,74 @@ class AdminSendResetLinkView(APIView):
             email_sent = True
         except Exception as e:
             logger.error(f"Failed to send reset email: {str(e)}")
-            # Still return the link so superuser can copy it manually
 
         return Response({
             'message': f'Password reset link {"sent to " + user.email if email_sent else "generated (email failed – copy the link below)"}',
             'reset_url': reset_url,
             'email_sent': email_sent
+        })
+
+
+# ==================== 🆕 MULTI‑SHOP (BRANCHES) VIEWS ====================
+class MyShopsView(APIView):
+    """List all shops owned by the authenticated user."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        shops = Shop.objects.filter(owner=request.user)
+        serializer = ShopSerializer(shops, many=True)
+        return Response(serializer.data)
+
+
+class CreateShopView(APIView):
+    """Create a new shop owned by the authenticated user."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if request.user.role != 'OWNER':
+            return Response({'error': 'Only owners can create shops.'}, status=403)
+
+        name = request.data.get('name')
+        address = request.data.get('address', '')
+
+        if not name:
+            return Response({'error': 'Shop name is required.'}, status=400)
+
+        shop = Shop.objects.create(
+            name=name,
+            address=address,
+            owner=request.user,
+            is_active=True,
+        )
+        return Response(ShopSerializer(shop).data, status=status.HTTP_201_CREATED)
+
+
+class SwitchShopView(APIView):
+    """Switch the user's active shop to another owned shop."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        shop_id = request.data.get('shop_id')
+        if not shop_id:
+            return Response({'error': 'shop_id required.'}, status=400)
+
+        try:
+            shop = Shop.objects.get(id=shop_id, owner=request.user)
+        except Shop.DoesNotExist:
+            return Response({'error': 'Shop not found or not owned by you.'}, status=404)
+
+        # ✅ Prevent switching to an inactive shop
+        if not shop.is_active:
+            return Response(
+                {'error': 'This shop is deactivated. Please contact support to reactivate it.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        user = request.user
+        user.shop = shop
+        user.save(update_fields=['shop'])
+
+        return Response({
+            'user': UserSerializer(user).data,
+            'shop': ShopSerializer(shop).data,
         })

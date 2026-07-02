@@ -1,3 +1,4 @@
+// src/components/ReceiptModal.tsx
 import { useRef, useEffect, useState } from 'react';
 import { Modal } from './Modal';
 import { Button } from './Button';
@@ -5,6 +6,7 @@ import { useAuthStore } from '../stores/authStore';
 import { useCustomerStore } from '../stores/customerStore';
 import { useProductStore } from '../stores/productStore';
 import type { Sale } from '../lib/dexie';
+import api from '../services/api';
 
 interface ReceiptModalProps {
   isOpen: boolean;
@@ -20,15 +22,116 @@ interface EnrichedItem {
   name: string;
 }
 
-export const ReceiptModal = ({ isOpen, onClose, sale }: ReceiptModalProps) => {
-  const { shop, user } = useAuthStore();
-  const { customers } = useCustomerStore();
-  const { products } = useProductStore(); // ✅ just use existing products, no fetch
-  const [enrichedItems, setEnrichedItems] = useState<EnrichedItem[]>([]);
+//New Version
+const CASHIERS_CACHE_KEY = 'cashiers_cache';
 
+function getCachedCashiers(): { id: string; phone: string }[] {
+  try {
+    const raw = localStorage.getItem(CASHIERS_CACHE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function setCachedCashiers(cashiers: { id: string; phone: string }[]) {
+  try {
+    localStorage.setItem(CASHIERS_CACHE_KEY, JSON.stringify(cashiers));
+  } catch {
+    // localStorage full – ignore
+  }
+}
+
+// ✅ Cache for user phone lookups
+const userPhoneCache = new Map<string, string>();
+
+/*
+Old Version
+async function getCashierPhone(userId: string): Promise<string> {
+  // Check cache
+  if (userPhoneCache.has(userId)) {
+    return userPhoneCache.get(userId)!;
+  }
+
+  // Check current user
+  const currentUser = useAuthStore.getState().user;
+  if (currentUser && currentUser.id === userId && currentUser.phone) {
+    userPhoneCache.set(userId, currentUser.phone);
+    return currentUser.phone;
+  }
+
+  // Fetch from API – try cashiers list first
+  try {
+    const res = await api.get('/users/cashiers/');
+    const cashiers = res.data.results || [];
+    const found = cashiers.find((u: any) => u.id === userId);
+    if (found && found.phone) {
+      userPhoneCache.set(userId, found.phone);
+      return found.phone;
+    }
+  } catch (err) {
+    console.warn('[ReceiptModal] Failed to fetch cashier phone', err);
+  }
+
+  // Fallback: return "Staff" with user ID
+  return `Staff (${userId.slice(0, 8)})`;
+}*/
+
+//New version
+async function getCashierPhone(userId: string): Promise<string> {
+  // 1. In‑memory cache
+  if (userPhoneCache.has(userId)) {
+    return userPhoneCache.get(userId)!;
+  }
+
+  // 2. Current logged‑in user (works offline)
+  const currentUser = useAuthStore.getState().user;
+  if (currentUser && currentUser.id === userId && currentUser.phone) {
+    userPhoneCache.set(userId, currentUser.phone);
+    return currentUser.phone;
+  }
+
+  // 3. Offline – check localStorage cache
+  if (!navigator.onLine) {
+    const cachedCashiers = getCachedCashiers();
+    const found = cachedCashiers.find(c => c.id === userId);
+    if (found) {
+      userPhoneCache.set(userId, found.phone);
+      return found.phone;
+    }
+    return `Staff (${userId.slice(0, 8)})`;
+  }
+
+  // 4. Online – fetch from server and update localStorage cache
+  try {
+    const res = await api.get('/users/cashiers/');
+    const cashiers = res.data.results || [];
+
+    // Update the persistent cache
+    setCachedCashiers(cashiers.map((c: any) => ({ id: c.id, phone: c.phone })));
+
+    const found = cashiers.find((u: any) => u.id === userId);
+    if (found && found.phone) {
+      userPhoneCache.set(userId, found.phone);
+      return found.phone;
+    }
+  } catch (err) {
+    console.warn('[ReceiptModal] Failed to fetch cashier phone', err);
+  }
+
+  // 5. Ultimate fallback
+  return `Staff (${userId.slice(0, 8)})`;
+}
+
+
+export const ReceiptModal = ({ isOpen, onClose, sale }: ReceiptModalProps) => {
+  const { shop } = useAuthStore();
+  const { customers } = useCustomerStore();
+  const { products } = useProductStore();
+  const [enrichedItems, setEnrichedItems] = useState<EnrichedItem[]>([]);
+  const [servedBy, setServedBy] = useState<string>('Staff');
   const printRef = useRef<HTMLDivElement>(null);
 
-  // Enrich items with product names whenever sale or products change
   useEffect(() => {
     if (!sale) {
       setEnrichedItems([]);
@@ -41,12 +144,10 @@ export const ReceiptModal = ({ isOpen, onClose, sale }: ReceiptModalProps) => {
       return;
     }
 
-    // Build a quick lookup map from products array
     const productMap = new Map();
     products.forEach(p => productMap.set(p.id, p.name));
 
     const enriched = items.map((item) => {
-      // If item already has a name (offline sale), use it
       if (item.name) {
         return {
           productId: item.productId,
@@ -56,7 +157,6 @@ export const ReceiptModal = ({ isOpen, onClose, sale }: ReceiptModalProps) => {
           name: item.name,
         };
       }
-      // Otherwise find product name from the cache
       const productName = productMap.get(item.productId);
       return {
         productId: item.productId,
@@ -67,6 +167,22 @@ export const ReceiptModal = ({ isOpen, onClose, sale }: ReceiptModalProps) => {
       };
     });
     setEnrichedItems(enriched);
+
+    // ✅ Resolve served-by phone asynchronously
+    const resolveServedBy = async () => {
+      if (sale.userPhone) {
+        setServedBy(sale.userPhone);
+        return;
+      }
+
+      if (sale.userId) {
+        const phone = await getCashierPhone(sale.userId);
+        setServedBy(phone);
+      } else {
+        setServedBy('Staff');
+      }
+    };
+    resolveServedBy();
   }, [sale, products]);
 
   if (!sale) return null;
@@ -176,7 +292,8 @@ export const ReceiptModal = ({ isOpen, onClose, sale }: ReceiptModalProps) => {
           <p className="text-xs text-gray-500">
             {new Date(sale.createdAt).toLocaleString()}
           </p>
-          <p className="text-xs">Served by: {user?.phone || 'Staff'}</p>
+          {/* ✅ Show the resolved cashier phone */}
+          <p className="text-xs">Served by: {servedBy}</p>
         </div>
 
         {/* Items Table */}
@@ -205,12 +322,10 @@ export const ReceiptModal = ({ isOpen, onClose, sale }: ReceiptModalProps) => {
           </tbody>
         </table>
 
-        {/* Item count */}
         <div className="text-xs text-gray-500 text-right">
           {totalItems} {itemLabel}
         </div>
 
-        {/* Totals, discount, and payment info */}
         <div className="border-t pt-2 text-sm">
           <div className="flex justify-between">
             <span>Subtotal</span>
@@ -241,13 +356,11 @@ export const ReceiptModal = ({ isOpen, onClose, sale }: ReceiptModalProps) => {
           )}
         </div>
 
-        {/* Footer */}
         <div className="text-center text-xs text-gray-400 mt-4">
           Thank you for your purchase!
         </div>
       </div>
 
-      {/* Buttons – hidden when printing */}
       <div className="print:hidden flex gap-3 pt-4">
         <Button variant="secondary" onClick={onClose} className="flex-1">
           Close

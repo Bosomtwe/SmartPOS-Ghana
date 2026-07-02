@@ -5,7 +5,6 @@ import api from '../services/api';
 import { useProductStore } from './productStore';
 import { useAuthStore } from './authStore';
 
-// Convert snake_case API fields to camelCase for local store
 const toCamelCaseProduct = (product: any): Product => ({
   id: product.id,
   name: product.name,
@@ -16,9 +15,9 @@ const toCamelCaseProduct = (product: any): Product => ({
   lowStockThreshold: product.low_stock_threshold ?? 5,
   isActive: product.is_active ?? true,
   shopId: product.shop,
+  customFields: product.custom_fields || {},
 });
 
-// Convert form data (snake_case) to camelCase for optimistic update
 const toCamelCaseMutationData = (data: any): Partial<Product> => {
   const result: any = {};
   if (data.name !== undefined) result.name = data.name;
@@ -28,6 +27,7 @@ const toCamelCaseMutationData = (data: any): Partial<Product> => {
   if (data.current_stock !== undefined) result.currentStock = data.current_stock;
   if (data.low_stock_threshold !== undefined) result.lowStockThreshold = data.low_stock_threshold;
   if (data.is_active !== undefined) result.isActive = data.is_active;
+  if (data.custom_fields !== undefined) result.customFields = data.custom_fields;
   return result;
 };
 
@@ -56,16 +56,17 @@ const applyMutationToLocalStore = (mutation: Omit<ProductMutation, 'id' | 'creat
       lowStockThreshold: camelData.lowStockThreshold ?? 5,
       isActive: camelData.isActive ?? true,
       shopId: shopId,
+      customFields: camelData.customFields || {},
     };
     productStore.addProductOptimistic(newProduct);
-  } 
+  }
   else if (mutation.type === 'UPDATE' && mutation.productId && mutation.data) {
     const camelData = toCamelCaseMutationData(mutation.data);
     productStore.updateProductOptimistic(mutation.productId, camelData);
-  } 
+  }
   else if (mutation.type === 'DELETE' && mutation.productId) {
     productStore.deleteProductOptimistic(mutation.productId);
-  } 
+  }
   else if (mutation.type === 'STOCK_ADJUST' && mutation.productId && mutation.data) {
     const { quantity, reason } = mutation.data;
     productStore.adjustStockOptimistic(mutation.productId, quantity, reason);
@@ -83,7 +84,6 @@ export const useProductMutationStore = create<ProductMutationState>((set, get) =
 
   addMutation: async (mutation) => {
     const { user } = useAuthStore.getState();
-    // ✅ Block cashiers from creating mutations
     if (user?.role !== 'OWNER') {
       console.warn('[productMutation] Cashier cannot create mutations');
       return;
@@ -111,7 +111,6 @@ export const useProductMutationStore = create<ProductMutationState>((set, get) =
 
   syncMutations: async () => {
     const { user } = useAuthStore.getState();
-    // ✅ Block cashiers from syncing mutations
     if (user?.role !== 'OWNER') {
       console.warn('[productMutation] Cashier cannot sync mutations');
       return;
@@ -132,7 +131,12 @@ export const useProductMutationStore = create<ProductMutationState>((set, get) =
           switch (mutation.type) {
             case 'CREATE': {
               const { id: tempId, ...productData } = mutation.data;
-              const response = await api.post('/products/', productData);
+              // ✅ Pass custom_fields as-is (already in snake_case)
+              const apiPayload = {
+                ...productData,
+                custom_fields: productData.custom_fields || {},
+              };
+              const response = await api.post('/products/', apiPayload);
               const serverProduct = toCamelCaseProduct(response.data);
               const productStore = useProductStore.getState();
               const finalTempId = tempId || mutation.data.id || mutation.productId;
@@ -144,7 +148,12 @@ export const useProductMutationStore = create<ProductMutationState>((set, get) =
               break;
             }
             case 'UPDATE': {
-              await api.patch(`/products/${mutation.productId}/`, mutation.data);
+              // ✅ Pass custom_fields as-is (already in snake_case)
+              const apiPayload = {
+                ...mutation.data,
+                custom_fields: mutation.data.custom_fields || {},
+              };
+              await api.patch(`/products/${mutation.productId}/`, apiPayload);
               break;
             }
             case 'DELETE': {

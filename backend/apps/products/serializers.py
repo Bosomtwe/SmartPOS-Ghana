@@ -1,11 +1,16 @@
 from rest_framework import serializers
 from .models import Product, InventoryTransaction
 
+
 class ProductSerializer(serializers.ModelSerializer):
     class Meta:
         model = Product
-        fields = ('id', 'name', 'sku', 'cost_price', 'selling_price', 'current_stock', 'low_stock_threshold', 'is_active')
-        # read_only_fields = ('current_stock',)
+        fields = (
+            'id', 'name', 'sku', 'cost_price', 'selling_price',
+            'current_stock', 'low_stock_threshold', 'is_active',
+            'custom_fields'   # ✅ added
+        )
+
 
 class InventoryTransactionSerializer(serializers.ModelSerializer):
     class Meta:

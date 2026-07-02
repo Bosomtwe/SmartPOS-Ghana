@@ -1,5 +1,6 @@
 # apps/sales/views.py
 import logging
+from datetime import datetime
 from rest_framework import generics, status, permissions, serializers
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
@@ -7,6 +8,7 @@ from django.db import transaction, IntegrityError
 from django.db.models import Sum, Q, F, DecimalField
 from django.db.models.functions import Coalesce
 from django.core.cache import cache
+from django.utils import timezone
 from .models import Sale, SaleItem
 from .serializers import SaleSerializer
 from apps.products.models import Product, InventoryTransaction
@@ -22,14 +24,15 @@ logger = logging.getLogger(__name__)
 
 def _create_sale_from_data(*, shop, user, customer_id, total_amount, discount,
                            payment_method, items, ip_address, sale_id=None,
-                           idempotency_key=None, momo_number='', request=None):
+                           idempotency_key=None, momo_number='', request=None,
+                           created_at=None, is_backdated=False, original_created_at=None):
     total_amount = Decimal(str(total_amount))
     discount = Decimal(str(discount)) if discount else Decimal('0.00')
 
     if not items:
         raise serializers.ValidationError("Sale must have at least one item.")
 
-    # Idempotency checks (unchanged)
+    # Idempotency checks
     if idempotency_key:
         try:
             existing_sale = Sale.objects.get(idempotency_key=idempotency_key, shop=shop)
@@ -62,7 +65,7 @@ def _create_sale_from_data(*, shop, user, customer_id, total_amount, discount,
             if product.current_stock < item['quantity']:
                 raise serializers.ValidationError(f"Insufficient stock for {product.name}")
 
-        # Credit validation (backend still enforces, but frontend will also be gated)
+        # Credit validation
         if payment_method == 'CREDIT' and customer_id:
             from apps.customers.models import Customer
             try:
@@ -89,13 +92,28 @@ def _create_sale_from_data(*, shop, user, customer_id, total_amount, discount,
             momo_number=momo_number,
             status='COMPLETED',
             idempotency_key=idempotency_key,
+            is_backdated=is_backdated,
+            original_created_at=original_created_at,
         )
+        if created_at:
+            kwargs['created_at'] = created_at
+            logger.info(f"[Backdating] Setting created_at to {created_at} for sale {sale_id or 'new'}")
+
         try:
             if sale_id:
                 sale = Sale(id=sale_id, **kwargs)
                 sale.save(force_insert=True)
+                if created_at:
+                    Sale.objects.filter(pk=sale.pk).update(created_at=created_at)
+                    logger.info(f"[Backdating] Updated created_at to {created_at} for sale {sale.id}")
             else:
                 sale = Sale.objects.create(**kwargs)
+                # ✅ FIX: Update created_at after creation if provided
+                if created_at:
+                    Sale.objects.filter(pk=sale.pk).update(created_at=created_at)
+                    logger.info(f"[Backdating] Created sale {sale.id} with backdated created_at={created_at}")
+                else:
+                    logger.info(f"[Backdating] Created sale {sale.id} with created_at={sale.created_at}")
         except IntegrityError:
             sale = Sale.objects.get(idempotency_key=idempotency_key, shop=shop)
             return sale
@@ -154,6 +172,19 @@ def _create_sale_from_data(*, shop, user, customer_id, total_amount, discount,
                 sale.customer.total_credit += sale.total_amount
                 sale.customer.save()
 
+        if is_backdated:
+            log_action(
+                shop=shop,
+                user=user,
+                action=AuditLog.ActionType.SALE_BACKDATED,
+                details={
+                    'sale_id': str(sale.id),
+                    'original_created_at': original_created_at.isoformat() if original_created_at else None,
+                    'backdated_to': created_at.isoformat() if created_at else None,
+                },
+                request=request
+            )
+
         log_action(
             shop=shop,
             user=user,
@@ -163,6 +194,7 @@ def _create_sale_from_data(*, shop, user, customer_id, total_amount, discount,
                 'total_amount': str(sale.total_amount),
                 'payment_method': sale.payment_method,
                 'item_count': len(items),
+                'is_backdated': is_backdated,
             },
             request=request
         )
@@ -186,9 +218,24 @@ class SaleCreateView(generics.CreateAPIView):
     @transaction.atomic
     def perform_create(self, serializer):
         data = self.request.data
+        user = self.request.user
+
+        created_at = None
+        is_backdated = False
+        original_created_at = None
+
+        if user.role == 'OWNER' and data.get('created_at'):
+            try:
+                created_at = datetime.fromisoformat(data['created_at'].replace('Z', '+00:00'))
+                is_backdated = True
+                original_created_at = timezone.now()
+                logger.info(f"[SaleCreateView] Received backdated timestamp: {created_at}")
+            except ValueError:
+                logger.warning(f"[SaleCreateView] Invalid created_at format: {data.get('created_at')}")
+
         sale = _create_sale_from_data(
             shop=self.request.user.shop,
-            user=self.request.user,
+            user=user,
             customer_id=data.get('customer'),
             total_amount=data.get('total_amount'),
             discount=data.get('discount', 0),
@@ -197,7 +244,10 @@ class SaleCreateView(generics.CreateAPIView):
             ip_address=self.request.META.get('REMOTE_ADDR'),
             idempotency_key=data.get('idempotency_key'),
             momo_number=data.get('momo_number', ''),
-            request=self.request
+            request=self.request,
+            created_at=created_at,
+            is_backdated=is_backdated,
+            original_created_at=original_created_at,
         )
         serializer.instance = sale
 
@@ -209,12 +259,36 @@ class SalesListPagination(PageNumberPagination):
 
 
 class SaleListView(generics.ListAPIView):
+    """
+    List sales for the authenticated user's shop.
+    - Cashiers see only their own sales.
+    - Owners see all sales, and can filter by user_id.
+    """
     serializer_class = SaleSerializer
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = SalesListPagination
 
     def get_queryset(self):
-        qs = Sale.objects.filter(shop=self.request.user.shop)
+        user = self.request.user
+        qs = Sale.objects.filter(shop=user.shop)
+
+        # ✅ Cashiers: only their own sales
+        if user.role == 'CASHIER':
+            qs = qs.filter(user=user)
+        else:
+            # Owners: optional user_id filter
+            user_id = self.request.query_params.get('user_id')
+            if user_id:
+                qs = qs.filter(user_id=user_id)
+
+        # Date filters (unchanged)
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        if start_date:
+            qs = qs.filter(created_at__date__gte=start_date)
+        if end_date:
+            qs = qs.filter(created_at__date__lte=end_date)
+
         qs = qs.annotate(
             total_paid=Coalesce(
                 Sum('credittransaction__amount',
@@ -347,6 +421,23 @@ class SyncSalesView(generics.GenericAPIView):
                                 })
                                 continue
 
+                    created_at_str = sale_data.get('created_at')
+                    created_at = None
+                    is_backdated = False
+                    original_created_at = None
+
+                    if created_at_str:
+                        try:
+                            created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                            if request.user.role == 'OWNER':
+                                is_backdated = True
+                                original_created_at = timezone.now()
+                                logger.info(f"[SyncSalesView] Backdating sale {client_id} to {created_at}")
+                            else:
+                                logger.warning(f"[SyncSalesView] Cashier attempted backdating – ignored")
+                        except ValueError:
+                            logger.warning(f"[SyncSalesView] Invalid created_at format: {created_at_str}")
+
                     sale = _create_sale_from_data(
                         shop=request.user.shop,
                         user=request.user,
@@ -359,13 +450,17 @@ class SyncSalesView(generics.GenericAPIView):
                         sale_id=client_id,
                         idempotency_key=idemp_key,
                         momo_number=sale_data.get('momo_number', ''),
-                        request=request
+                        request=request,
+                        created_at=created_at,
+                        is_backdated=is_backdated,
+                        original_created_at=original_created_at,
                     )
 
                     results.append({
                         'sale_id': str(sale.id),
                         'client_id': client_id or str(sale.id),
-                        'status': 'success'
+                        'status': 'success',
+                        'sale': SaleSerializer(sale).data,
                     })
 
             except Exception as e:

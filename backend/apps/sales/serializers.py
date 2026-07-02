@@ -18,18 +18,24 @@ class SaleSerializer(serializers.ModelSerializer):
     momo_number = serializers.CharField(
         max_length=20, allow_blank=True, allow_null=True, default=''
     )
-    # ✅ Add customer name and ID for frontend display
     customer_name = serializers.CharField(source='customer.name', read_only=True, default='Guest')
     customer_id = serializers.UUIDField(source='customer.id', read_only=True, allow_null=True)
+
+    # ✅ Allow backdating via created_at (owners only – enforced in view)
+    created_at = serializers.DateTimeField(required=False)
 
     class Meta:
         model = Sale
         fields = (
             'id', 'user', 'customer', 'customer_id', 'customer_name', 'total_amount', 'discount',
             'payment_method', 'momo_number', 'status', 'void_reason', 'created_at',
-            'items', 'total_paid', 'balance', 'idempotency_key'
+            'items', 'total_paid', 'balance', 'idempotency_key',
+            'is_backdated', 'original_created_at',  # ✅ NEW
         )
-        read_only_fields = ('user', 'status', 'total_paid', 'balance', 'idempotency_key', 'customer_name', 'customer_id')
+        read_only_fields = (
+            'user', 'status', 'total_paid', 'balance', 'idempotency_key',
+            'customer_name', 'customer_id', 'is_backdated', 'original_created_at'
+        )
 
     def get_total_paid(self, obj):
         return getattr(obj, 'total_paid', 0) or 0

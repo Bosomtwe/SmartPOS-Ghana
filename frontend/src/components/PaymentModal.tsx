@@ -6,6 +6,7 @@ import { Button } from './Button';
 import { CustomerSelector } from './CustomerSelector';
 import { useUIStore } from '../stores/uiStore';
 import { useCustomerStore } from '../stores/customerStore';
+import { useAuthStore } from '../stores/authStore';
 
 interface PaymentModalProps {
   isOpen: boolean;
@@ -24,6 +25,7 @@ const paymentMethods = [
 export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing = false }: PaymentModalProps) => {
   const { addToast } = useUIStore();
   const { customers } = useCustomerStore();
+  const { user } = useAuthStore();
 
   const [paymentMethod, setPaymentMethod] = useState('CASH');
   const [customerId, setCustomerId] = useState<string | undefined>();
@@ -32,6 +34,11 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
   const [discountType, setDiscountType] = useState<'none' | 'percent' | 'fixed'>('none');
   const [discountValue, setDiscountValue] = useState<string>('');
   const [showDiscountInput, setShowDiscountInput] = useState(false);
+
+  // Backdating state – split into date and time
+  const [useBackdate, setUseBackdate] = useState(false);
+  const [backdateDate, setBackdateDate] = useState('');
+  const [backdateTime, setBackdateTime] = useState('');
 
   const confirmingRef = useRef(false);
 
@@ -45,11 +52,20 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
       setDiscountType('none');
       setDiscountValue('');
       setShowDiscountInput(false);
+      setUseBackdate(false);
+      setBackdateDate('');
+      setBackdateTime('');
       confirmingRef.current = false;
+
+      // Pre-fill with current date/time when backdating is enabled
+      const now = new Date();
+      const dateStr = now.toISOString().split('T')[0]; // YYYY-MM-DD
+      const timeStr = now.toTimeString().slice(0, 5); // HH:MM
+      setBackdateDate(dateStr);
+      setBackdateTime(timeStr);
     }
   }, [isOpen]);
 
-  // Clear customer when switching away from CREDIT
   const handlePaymentMethodChange = (method: string) => {
     setPaymentMethod(method);
     if (method !== 'CREDIT') {
@@ -71,7 +87,6 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
   const finalTotal = total - discountAmount();
   const changeAmount = amountTendered ? parseFloat(amountTendered) - finalTotal : 0;
 
-  // Credit limit check
   const selectedCustomer = customerId ? customers.find(c => c.id === customerId) : null;
   let remainingCredit: number | null = null;
   let isCreditLimitExceeded = false;
@@ -119,6 +134,18 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
       };
     }
 
+    // ✅ Combine date and time into ISO string for backdating
+    if (user?.role === 'OWNER' && useBackdate && backdateDate && backdateTime) {
+      const dateTimeStr = `${backdateDate}T${backdateTime}:00`;
+      const localDate = new Date(dateTimeStr);
+      // If the local date is invalid, fallback to current time
+      if (!isNaN(localDate.getTime())) {
+        metadata.created_at = localDate.toISOString();
+      } else {
+        addToast({ message: 'Invalid date/time, using current time.', type: 'warning' });
+      }
+    }
+
     confirmingRef.current = true;
     onComplete(paymentMethod, customerId, metadata);
   };
@@ -128,20 +155,16 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Complete Payment" closeOnBackdropClick={false}>
       <div className="space-y-5">
+        {/* Total display */}
         <div className="text-center py-5 bg-green-50 rounded-2xl border border-green-100">
-          <p className="text-xs text-green-700 font-bold uppercase tracking-widest">
-            Total Payable
-          </p>
-          <p className="text-4xl font-black text-green-600 mt-1">
-            {formatCurrency(finalTotal)}
-          </p>
+          <p className="text-xs text-green-700 font-bold uppercase tracking-widest">Total Payable</p>
+          <p className="text-4xl font-black text-green-600 mt-1">{formatCurrency(finalTotal)}</p>
           {discountAmount() > 0 && (
-            <p className="text-xs text-gray-500 mt-1">
-              Discount: -{formatCurrency(discountAmount())}
-            </p>
+            <p className="text-xs text-gray-500 mt-1">Discount: -{formatCurrency(discountAmount())}</p>
           )}
         </div>
 
+        {/* Discount toggle */}
         <div className="flex items-center justify-between">
           <button
             type="button"
@@ -151,9 +174,7 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
             {showDiscountInput ? '− Hide discount' : '+ Add discount'}
           </button>
           {discountAmount() > 0 && (
-            <span className="text-sm text-gray-600">
-              -{formatCurrency(discountAmount())}
-            </span>
+            <span className="text-sm text-gray-600">-{formatCurrency(discountAmount())}</span>
           )}
         </div>
 
@@ -195,9 +216,7 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
                   placeholder={discountType === 'percent' ? '10' : '5.00'}
                   value={discountValue}
                   onChange={(e) => setDiscountValue(e.target.value)}
-                  className={`w-full pl-9 pr-4 py-2.5 border border-gray-300 rounded-lg text-sm ${
-                    discountType === 'percent' ? '' : 'pl-12'
-                  }`}
+                  className={`w-full pl-9 pr-4 py-2.5 border border-gray-300 rounded-lg text-sm ${discountType === 'percent' ? '' : 'pl-12'}`}
                 />
               </div>
             </div>
@@ -212,10 +231,9 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
           </div>
         )}
 
+        {/* Payment method selection */}
         <RadioGroup value={paymentMethod} onChange={handlePaymentMethodChange}>
-          <RadioGroup.Label className="text-sm font-bold text-gray-900">
-            Payment Method
-          </RadioGroup.Label>
+          <RadioGroup.Label className="text-sm font-bold text-gray-900">Payment Method</RadioGroup.Label>
           <div className="grid grid-cols-3 gap-3 mt-3">
             {paymentMethods.map((method) => (
               <RadioGroup.Option
@@ -236,11 +254,10 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
           </div>
         </RadioGroup>
 
+        {/* Cash specific */}
         {paymentMethod === 'CASH' && (
           <div className="space-y-2">
-            <label className="block text-sm font-medium text-gray-700">
-              Amount Tendered (Optional)
-            </label>
+            <label className="block text-sm font-medium text-gray-700">Amount Tendered (Optional)</label>
             <div className="relative">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">GHS</span>
               <input
@@ -261,11 +278,10 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
           </div>
         )}
 
+        {/* MoMo specific */}
         {paymentMethod === 'MOMO' && (
           <div className="space-y-2">
-            <label className="block text-sm font-medium text-gray-700">
-              Mobile Money Number (Optional)
-            </label>
+            <label className="block text-sm font-medium text-gray-700">Mobile Money Number (Optional)</label>
             <input
               type="tel"
               placeholder="e.g., 024XXXXXXX"
@@ -276,6 +292,7 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
           </div>
         )}
 
+        {/* Credit specific */}
         {paymentMethod === 'CREDIT' && (
           <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl space-y-3">
             <h4 className="text-sm font-bold text-gray-800">Select Customer</h4>
@@ -304,13 +321,57 @@ export const PaymentModal = ({ isOpen, onClose, total, onComplete, isProcessing 
               </div>
             )}
             {!customerId && (
-              <p className="text-xs text-red-500 font-medium">
-                * A customer must be assigned for credit sales.
-              </p>
+              <p className="text-xs text-red-500 font-medium">* A customer must be assigned for credit sales.</p>
             )}
           </div>
         )}
 
+        {/* Backdating – split date/time for mobile friendliness */}
+        {user?.role === 'OWNER' && (
+          <div className="border-t pt-3">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="useBackdate"
+                checked={useBackdate}
+                onChange={(e) => setUseBackdate(e.target.checked)}
+                className="h-4 w-4 rounded"
+              />
+              <label htmlFor="useBackdate" className="text-sm text-gray-700">
+                Record sale for a different date/time (owner only)
+              </label>
+            </div>
+            {useBackdate && (
+              <div className="mt-3 space-y-3">
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <div className="flex-1">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
+                    <input
+                      type="date"
+                      value={backdateDate}
+                      onChange={(e) => setBackdateDate(e.target.value)}
+                      className="w-full p-3 border rounded-lg text-base"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Time</label>
+                    <input
+                      type="time"
+                      value={backdateTime}
+                      onChange={(e) => setBackdateTime(e.target.value)}
+                      className="w-full p-3 border rounded-lg text-base"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-yellow-600">
+                  ⚠️ This will be marked as backdated and appear in audit logs.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Action buttons */}
         <div className="flex gap-3 pt-2">
           <Button variant="secondary" onClick={onClose} className="flex-1 py-3 text-base">
             Cancel

@@ -1,3 +1,4 @@
+# apps/reports/views.py
 from rest_framework import generics, permissions
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
@@ -26,12 +27,18 @@ class TopProductsPagination(PageNumberPagination):
     max_page_size = 50
 
 
-# ----- Dashboard Overview -----
+# ----- Dashboard Overview (with cashier/owner filtering) -----
 class DashboardOverviewView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        shop = request.user.shop
+        user = request.user
+        shop = user.shop
+
+        # Optional filter for owners
+        filter_user_id = None
+        if user.role == 'OWNER':
+            filter_user_id = request.query_params.get('user_id')
 
         # parse date range
         start_str = request.query_params.get('start')
@@ -48,13 +55,20 @@ class DashboardOverviewView(generics.GenericAPIView):
         else:
             end = datetime.strptime(end_str, '%Y-%m-%d').date()
 
-        # base queryset
+        # base queryset for sales
         sales_qs = Sale.objects.filter(
             shop=shop,
             status='COMPLETED',
             created_at__date__gte=start,
             created_at__date__lte=end
         )
+
+        # Apply filters: cashier, or owner-selected user_id
+        if user.role == 'CASHIER':
+            sales_qs = sales_qs.filter(user=user)
+        elif filter_user_id:
+            # Ensure the filtered user belongs to the same shop
+            sales_qs = sales_qs.filter(user_id=filter_user_id, user__shop=shop)
 
         # aggregates
         total_sales = sales_qs.aggregate(total=Sum('total_amount'))['total'] or 0
@@ -76,13 +90,19 @@ class DashboardOverviewView(generics.GenericAPIView):
         total_products = Product.objects.filter(shop=shop, is_active=True).count()
         top_n = min(20, max(5, total_products // 10)) if total_products > 0 else 5
 
+        top_products_qs = SaleItem.objects.filter(
+            sale__shop=shop,
+            sale__created_at__date__gte=start,
+            sale__created_at__date__lte=end,
+            sale__status='COMPLETED'
+        )
+        if user.role == 'CASHIER':
+            top_products_qs = top_products_qs.filter(sale__user=user)
+        elif filter_user_id:
+            top_products_qs = top_products_qs.filter(sale__user_id=filter_user_id)
+
         top_products = (
-            SaleItem.objects.filter(
-                sale__shop=shop,
-                sale__created_at__date__gte=start,
-                sale__created_at__date__lte=end,
-                sale__status='COMPLETED'
-            )
+            top_products_qs
             .values('product__name')
             .annotate(total_sold=Sum('quantity'))
             .order_by('-total_sold')[:top_n]
@@ -92,7 +112,7 @@ class DashboardOverviewView(generics.GenericAPIView):
             for item in top_products
         ]
 
-        # previous period (same length)
+        # previous period (same length) – also filtered
         delta = (end - start).days
         prev_start = start - timedelta(days=delta + 1)
         prev_end = start - timedelta(days=1)
@@ -103,6 +123,11 @@ class DashboardOverviewView(generics.GenericAPIView):
             created_at__date__gte=prev_start,
             created_at__date__lte=prev_end
         )
+        if user.role == 'CASHIER':
+            prev_sales = prev_sales.filter(user=user)
+        elif filter_user_id:
+            prev_sales = prev_sales.filter(user_id=filter_user_id)
+
         prev_total_sales = prev_sales.aggregate(total=Sum('total_amount'))['total'] or 0
 
         prev_cost = 0
@@ -112,7 +137,7 @@ class DashboardOverviewView(generics.GenericAPIView):
                     prev_cost += item.quantity * item.product.cost_price
         prev_profit = prev_total_sales - prev_cost
 
-        # low stock count
+        # low stock count (shop-wide, not filtered by user)
         low_stock_count = Product.objects.filter(
             shop=shop,
             current_stock__lte=F('low_stock_threshold'),
@@ -132,18 +157,28 @@ class DashboardOverviewView(generics.GenericAPIView):
         })
 
 
-# ----- CSV Export -----
+# ----- CSV Export (with cashier/owner filtering) -----
 class SalesReportExportView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
+        user = request.user
         start_date = request.query_params.get('start_date')
         end_date = request.query_params.get('end_date')
 
         sales_qs = Sale.objects.filter(
-            shop=request.user.shop,
+            shop=user.shop,
             status='COMPLETED'
         ).select_related('customer').prefetch_related('items__product')
+
+        # ✅ Cashier: only their own sales
+        if user.role == 'CASHIER':
+            sales_qs = sales_qs.filter(user=user)
+        else:
+            # Owners: optional user_id filter
+            user_id = request.query_params.get('user_id')
+            if user_id:
+                sales_qs = sales_qs.filter(user_id=user_id)
 
         if start_date:
             sales_qs = sales_qs.filter(created_at__date__gte=start_date)
@@ -177,39 +212,62 @@ class SalesReportExportView(generics.GenericAPIView):
         return response
 
 
-# ----- JSON endpoint for paginated sales table -----
+# ----- JSON endpoint for paginated sales table (with filtering) -----
 class SalesReportJsonView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = SaleSerializer
     pagination_class = SalesReportPagination
 
     def get_queryset(self):
+        user = self.request.user
         start_date = self.request.query_params.get('start_date')
         end_date = self.request.query_params.get('end_date')
+
         qs = Sale.objects.filter(
-            shop=self.request.user.shop,
+            shop=user.shop,
             status='COMPLETED'
         ).select_related('customer').prefetch_related('items__product')
+
+        # ✅ Cashier: only their own sales
+        if user.role == 'CASHIER':
+            qs = qs.filter(user=user)
+        else:
+            user_id = self.request.query_params.get('user_id')
+            if user_id:
+                qs = qs.filter(user_id=user_id)
+
         if start_date:
             qs = qs.filter(created_at__date__gte=start_date)
         if end_date:
             qs = qs.filter(created_at__date__lte=end_date)
+
         return qs.order_by('-created_at')
 
 
-# ----- Paginated Top Selling Products (JSON) -----
+# ----- Paginated Top Selling Products (with cashier/owner filtering) -----
 class TopProductsJsonView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = TopProductsPagination
 
     def get(self, request):
+        user = request.user
         start_date = request.query_params.get('start_date')
         end_date = request.query_params.get('end_date')
 
         qs = SaleItem.objects.filter(
-            sale__shop=request.user.shop,
+            sale__shop=user.shop,
             sale__status='COMPLETED'
         )
+
+        # ✅ Cashier: only include items from their sales
+        if user.role == 'CASHIER':
+            qs = qs.filter(sale__user=user)
+        else:
+            # Owners: optional user_id filter
+            user_id = request.query_params.get('user_id')
+            if user_id:
+                qs = qs.filter(sale__user_id=user_id)
+
         if start_date:
             qs = qs.filter(sale__created_at__date__gte=start_date)
         if end_date:
@@ -240,7 +298,7 @@ class TopProductsJsonView(generics.GenericAPIView):
         return paginator.get_paginated_response(results)
 
 
-# ----- Stock Report Export -----
+# ----- Stock Report Export (unchanged) -----
 class StockReportExportView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 

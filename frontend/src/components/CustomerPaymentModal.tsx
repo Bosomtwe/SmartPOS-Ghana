@@ -3,7 +3,9 @@ import { useState, useEffect } from 'react';
 import { Button } from './Button';
 import { useCustomerStore } from '../stores/customerStore';
 import { useUIStore } from '../stores/uiStore';
+import { useAuthStore } from '../stores/authStore';
 import api from '../services/api';
+import { db } from '../lib/dexie';
 
 interface Props {
   customer: { id: string; name: string; totalCredit: number };
@@ -20,20 +22,67 @@ const formatCurrency = (amount: number | string) => {
 export const CustomerPaymentModal = ({ customer, onClose, onSuccess }: Props) => {
   const { recordPayment } = useCustomerStore();
   const { addToast } = useUIStore();
+  const { shop } = useAuthStore();
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
   const [loading, setLoading] = useState(false);
   const [outstandingSales, setOutstandingSales] = useState<any[]>([]);
   const [selectedSaleId, setSelectedSaleId] = useState<string>('');
   const [paymentMode, setPaymentMode] = useState<'general' | 'specific'>('general');
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [outstandingLoading, setOutstandingLoading] = useState(false);
 
   useEffect(() => {
-    api.get(`/customers/${customer.id}/outstanding_sales/`)
-      .then(res => setOutstandingSales(res.data))
-      .catch(() => {});
-  }, [customer.id]);
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
-  // Total outstanding across all sales (for general mode)
+  useEffect(() => {
+    let cancelled = false;
+    const loadOutstanding = async () => {
+      setOutstandingLoading(true);
+      try {
+        if (isOnline) {
+          const res = await api.get(`/customers/${customer.id}/outstanding_sales/`);
+          if (!cancelled) setOutstandingSales(res.data);
+        } else {
+          // Offline: load from Dexie (no index needed – filter in JS)
+          const allSales = await db.sales.toArray();
+          const shopId = shop?.id || localStorage.getItem('shopId');
+          const outstanding = allSales
+            .filter(s => 
+              s.customerId === customer.id &&
+              s.paymentMethod === 'CREDIT' &&
+              s.status !== 'VOIDED' &&
+              (s.balance ?? 0) > 0 &&
+              (!shopId || s.shopId === shopId)
+            )
+            .map(s => ({
+              id: s.id,
+              created_at: s.createdAt.toISOString(),
+              total_amount: s.totalAmount,
+              balance: s.balance ?? 0,
+            }));
+          if (!cancelled) setOutstandingSales(outstanding);
+        }
+      } catch (err) {
+        console.error('Failed to load outstanding sales', err);
+        if (!cancelled) setOutstandingSales([]);
+      } finally {
+        if (!cancelled) setOutstandingLoading(false);
+      }
+    };
+
+    loadOutstanding();
+    return () => { cancelled = true; };
+  }, [customer.id, isOnline, shop?.id]);
+
   const totalOutstanding = outstandingSales.reduce(
     (sum, sale) => sum + parseFloat(sale.balance || '0'),
     0
@@ -43,8 +92,10 @@ export const CustomerPaymentModal = ({ customer, onClose, onSuccess }: Props) =>
     ? outstandingSales.find(s => s.id === selectedSaleId)
     : null;
 
-  const maxAmount =
-    paymentMode === 'specific' && selectedSale
+  // Max amount: online uses server data; offline falls back to total customer debt.
+  const maxAmount = !isOnline
+    ? customer.totalCredit
+    : paymentMode === 'specific' && selectedSale
       ? parseFloat(selectedSale.balance || '0')
       : totalOutstanding;
 
@@ -99,6 +150,8 @@ export const CustomerPaymentModal = ({ customer, onClose, onSuccess }: Props) =>
   const saleDate = (sale: any) =>
     sale.created_at ? new Date(sale.created_at).toLocaleDateString() : 'Unknown date';
 
+  const specificSaleDisabled = !isOnline && outstandingSales.length === 0;
+
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-xl w-full max-w-md p-6">
@@ -112,6 +165,11 @@ export const CustomerPaymentModal = ({ customer, onClose, onSuccess }: Props) =>
           {outstandingSales.length > 0 && (
             <p className="text-xs text-gray-500 mt-1">
               Spread across {outstandingSales.length} credit sale(s)
+            </p>
+          )}
+          {!isOnline && (
+            <p className="text-xs text-yellow-600 mt-1">
+              Offline – showing locally available data.
             </p>
           )}
         </div>
@@ -148,12 +206,15 @@ export const CustomerPaymentModal = ({ customer, onClose, onSuccess }: Props) =>
                   name="paymentMode"
                   checked={paymentMode === 'specific'}
                   onChange={() => setPaymentMode('specific')}
+                  disabled={specificSaleDisabled}
                   className="mt-0.5"
                 />
                 <div>
                   <span className="text-sm font-medium">Apply to a specific sale</span>
                   <p className="text-xs text-gray-500 mt-0.5">
-                    The payment will only reduce the balance of the selected sale.
+                    {specificSaleDisabled
+                      ? 'No offline sales available for specific allocation – use general mode.'
+                      : 'The payment will only reduce the balance of the selected sale.'}
                   </p>
                 </div>
               </label>
@@ -163,29 +224,39 @@ export const CustomerPaymentModal = ({ customer, onClose, onSuccess }: Props) =>
           {/* Specific sale dropdown (only when specific mode) */}
           {paymentMode === 'specific' && (
             <div>
-              <label className="block text-sm font-medium mb-1">Choose a sale</label>
-              <select
-                value={selectedSaleId}
-                onChange={(e) => {
-                  setSelectedSaleId(e.target.value);
-                  setAmount('');
-                }}
-                className="w-full p-2 border rounded-lg text-sm"
-                required
-              >
-                <option value="">-- Select a sale --</option>
-                {outstandingSales.map(sale => (
-                  <option key={sale.id} value={sale.id}>
-                    {saleDate(sale)} – Total: {formatCurrency(sale.total_amount)} (owing: {formatCurrency(sale.balance)})
-                  </option>
-                ))}
-              </select>
-              {selectedSale && (
-                <div className="mt-2 p-2 bg-blue-50 rounded text-xs text-blue-800">
-                  Sale from <strong>{saleDate(selectedSale)}</strong> ·
-                  Total {formatCurrency(selectedSale.total_amount)} ·
-                  Remaining {formatCurrency(selectedSale.balance)}
-                </div>
+              {outstandingSales.length === 0 ? (
+                <p className="text-sm text-yellow-600">
+                  {outstandingLoading
+                    ? 'Loading sales…'
+                    : 'No outstanding sales available for this customer.'}
+                </p>
+              ) : (
+                <>
+                  <label className="block text-sm font-medium mb-1">Choose a sale</label>
+                  <select
+                    value={selectedSaleId}
+                    onChange={(e) => {
+                      setSelectedSaleId(e.target.value);
+                      setAmount('');
+                    }}
+                    className="w-full p-2 border rounded-lg text-sm"
+                    required
+                  >
+                    <option value="">-- Select a sale --</option>
+                    {outstandingSales.map(sale => (
+                      <option key={sale.id} value={sale.id}>
+                        {saleDate(sale)} – Total: {formatCurrency(sale.total_amount)} (owing: {formatCurrency(sale.balance)})
+                      </option>
+                    ))}
+                  </select>
+                  {selectedSale && (
+                    <div className="mt-2 p-2 bg-blue-50 rounded text-xs text-blue-800">
+                      Sale from <strong>{saleDate(selectedSale)}</strong> ·
+                      Total {formatCurrency(selectedSale.total_amount)} ·
+                      Remaining {formatCurrency(selectedSale.balance)}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -211,11 +282,13 @@ export const CustomerPaymentModal = ({ customer, onClose, onSuccess }: Props) =>
               placeholder={`Max ${formatCurrency(maxAmount)}`}
             />
             <p className="text-xs text-gray-500 mt-1">
-              {paymentMode === 'general'
-                ? `Total outstanding across all sales: ${formatCurrency(totalOutstanding)}`
-                : selectedSale
-                  ? `This sale's outstanding: ${formatCurrency(parseFloat(selectedSale.balance) || 0)}`
-                  : 'Select a sale to see its outstanding'}
+              {!isOnline
+                ? `Total customer debt: ${formatCurrency(customer.totalCredit)}`
+                : paymentMode === 'general'
+                  ? `Total outstanding across all sales: ${formatCurrency(totalOutstanding)}`
+                  : selectedSale
+                    ? `This sale's outstanding: ${formatCurrency(parseFloat(selectedSale.balance) || 0)}`
+                    : 'Select a sale to see its outstanding'}
             </p>
           </div>
 
@@ -235,7 +308,10 @@ export const CustomerPaymentModal = ({ customer, onClose, onSuccess }: Props) =>
             <Button variant="secondary" type="button" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" disabled={loading || (paymentMode === 'specific' && !selectedSaleId)}>
+            <Button
+              type="submit"
+              disabled={loading || (paymentMode === 'specific' && !selectedSaleId)}
+            >
               {loading ? 'Processing...' : 'Record Payment'}
             </Button>
           </div>

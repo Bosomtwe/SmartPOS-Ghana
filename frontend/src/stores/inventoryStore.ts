@@ -22,6 +22,7 @@ interface InventoryState {
   updateProduct: (id: string, data: Partial<Product>) => Promise<void>;
   deleteProduct: (id: string) => Promise<void>;
   adjustStock: (id: string, quantity: number, reason: string) => Promise<void>;
+  clearProducts: () => void;   // ✅ MUST be here
 }
 
 const extractList = (data: any): any[] => {
@@ -65,33 +66,17 @@ export const useInventoryStore = create<InventoryState>((set) => ({
 
   updateProduct: async (id, data) => {
     set({ loading: true, error: null });
-    console.group(`[updateProduct] Editing product ${id}`);
-    console.log('Data to send (PATCH):', JSON.stringify(data, null, 2));
-    
     try {
       const res = await api.patch(`/products/${id}/`, data);
-      console.log('PATCH response:', res.data);
       set((state) => ({
         products: state.products.map((p) => (p.id === id ? res.data : p)),
         loading: false,
       }));
-      console.groupEnd();
     } catch (err: any) {
-      console.error('PATCH request failed:', err);
-      let errorMessage = 'Failed to update product';
-      if (err.response) {
-        console.error('Status:', err.response.status);
-        console.error('Error data:', err.response.data);
-        // Extract error message from response (handles both 'error' and 'detail' keys)
-        errorMessage = err.response.data?.error || err.response.data?.detail || err.response.data?.message || `Server error: ${err.response.status}`;
-      } else if (err.message) {
-        errorMessage = err.message;
-      }
       set({
-        error: errorMessage,
+        error: err.response?.data?.detail || 'Failed to update product',
         loading: false,
       });
-      console.groupEnd();
       throw err;
     }
   },
@@ -128,5 +113,10 @@ export const useInventoryStore = create<InventoryState>((set) => ({
       });
       throw err;
     }
+  },
+
+  // ✅ NEW: Clear all products from the store
+  clearProducts: () => {
+    set({ products: [] });
   },
 }));

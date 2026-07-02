@@ -1,10 +1,13 @@
 // src/App.tsx
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './stores/authStore';
 import { useSyncStore } from './stores/syncStore';
 import { useSubscriptionStore } from './stores/subscriptionStore';
 import { useProductMutationStore } from './stores/productMutationStore';
+import { useProductStore } from './stores/productStore';
+import { useSalesStore } from './stores/saleStore';
+import { useCustomerStore } from './stores/customerStore';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import ResetPassword from './pages/ResetPassword';
@@ -39,16 +42,16 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           {children}
         </div>
       </div>
-      {/* BottomNav now only appears inside protected layout */}
       <BottomNav />
     </div>
   );
 }
 
 export default function App() {
-  const refreshPendingCount = useSyncStore((state) => state.refreshPendingCount);
   const { token, user } = useAuthStore();
+  const refreshPendingCount = useSyncStore((state) => state.refreshPendingCount);
   const { fetchCurrent, fetchPlans } = useSubscriptionStore();
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     refreshPendingCount();
@@ -66,16 +69,6 @@ export default function App() {
   useEffect(() => {
     const handleOnline = () => {
       processOfflineSubscriptionQueue();
-    };
-    window.addEventListener('online', handleOnline);
-    if (navigator.onLine) {
-      processOfflineSubscriptionQueue();
-    }
-    return () => window.removeEventListener('online', handleOnline);
-  }, []);
-
-  useEffect(() => {
-    const handleOnline = () => {
       useProductMutationStore.getState().syncMutations();
     };
     window.addEventListener('online', handleOnline);
@@ -85,19 +78,60 @@ export default function App() {
     return () => window.removeEventListener('online', handleOnline);
   }, []);
 
+  // Load core data when logged in – now depends on user?.id
+  useEffect(() => {
+    const loadData = async () => {
+      if (token && user) {
+        try {
+          await Promise.all([
+            useProductStore.getState().fetchProducts(),
+            useSalesStore.getState().fetchSales(),
+            useCustomerStore.getState().fetchCustomers(),
+          ]);
+        } catch (err) {
+          console.warn('Failed to load initial data:', err);
+        } finally {
+          setIsLoading(false);
+        }
+      } else {
+        setIsLoading(false);
+      }
+    };
+    loadData();
+  }, [token, user?.id]); // ✅ depend on user.id to trigger refresh on role change
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-gray-50">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-green-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading your data...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <BrowserRouter>
       <ErrorBoundary>
         <Routes>
-          {/* Public routes – no BottomNav */}
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/reset-password/:uidb64/:token" element={<ResetPassword />} />
           <Route path="/logout" element={<LogoutPage />} />
 
-          {/* Protected routes – all wrapped in AppLayout (which includes BottomNav) */}
-          <Route path="/" element={<PrivateRoute><AppLayout><Dashboard /></AppLayout></PrivateRoute>} />
+          <Route
+            path="/"
+            element={
+              <PrivateRoute>
+                {/* ✅ Force Dashboard remount when user changes */}
+                <AppLayout key={user?.id || 'no-user'}>
+                  <Dashboard />
+                </AppLayout>
+              </PrivateRoute>
+            }
+          />
           <Route path="/pos" element={<PrivateRoute><AppLayout><Pos /></AppLayout></PrivateRoute>} />
           <Route path="/inventory" element={<PrivateRoute><AppLayout><Inventory /></AppLayout></PrivateRoute>} />
           <Route path="/customers" element={<PrivateRoute><AppLayout><Customers /></AppLayout></PrivateRoute>} />
@@ -106,7 +140,6 @@ export default function App() {
           <Route path="/settings" element={<PrivateRoute><AppLayout><Settings /></AppLayout></PrivateRoute>} />
           <Route path="/analytics" element={<PrivateRoute><AppLayout><AnalyticsPage /></AppLayout></PrivateRoute>} />
 
-          {/* Subscription – owners only */}
           <Route
             path="/subscription"
             element={
@@ -116,7 +149,6 @@ export default function App() {
             }
           />
 
-          {/* Admin subscriptions – superusers only */}
           <Route
             path="/admin/subscriptions"
             element={
@@ -126,7 +158,6 @@ export default function App() {
             }
           />
 
-          {/* Catch-all */}
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
       </ErrorBoundary>

@@ -28,16 +28,29 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   CreditCardIcon,
+  PlusIcon,
+  BuildingStorefrontIcon,
 } from '@heroicons/react/24/outline';
 
 export default function Settings() {
-  const { user, shop, token, refreshToken, setAuth } = useAuthStore();
+  const { user, shop, token, refreshToken, setAuth, shops, createShop, fetchShops } = useAuthStore();
   const { addToast } = useUIStore();
   const { pendingSales } = useSyncStore();
 
   // Subscription state
   const [subscription, setSubscription] = useState<any>(null);
   const [loadingSub, setLoadingSub] = useState(false);
+
+  // Branch management state
+  const [showCreateShopModal, setShowCreateShopModal] = useState(false);
+  const [newShopName, setNewShopName] = useState('');
+  const [newShopAddress, setNewShopAddress] = useState('');
+  const [creatingShop, setCreatingShop] = useState(false);
+
+  // ✅ Superuser – all shops management
+  const [allShops, setAllShops] = useState<any[]>([]);
+  const [loadingShops, setLoadingShops] = useState(false);
+  const [togglingShopId, setTogglingShopId] = useState<string | null>(null);
 
   // Invite & Cashier management state
   const [showInviteModal, setShowInviteModal] = useState(false);
@@ -61,9 +74,59 @@ export default function Settings() {
   const [emailValue, setEmailValue] = useState(user?.email || '');
   const [emailSaving, setEmailSaving] = useState(false);
 
+  // ==================== FETCH ALL SHOPS (superuser only) ====================
+  const fetchAllShops = async () => {
+    if (!user?.is_superuser) return;
+    if (!navigator.onLine) {
+      console.log('[Settings] Offline – skipping shops fetch');
+      return;
+    }
+    setLoadingShops(true);
+    try {
+      const res = await api.get('/admin/shops/');
+      setAllShops(res.data);
+    } catch (err) {
+      addToast({ message: 'Failed to load shops', type: 'error' });
+    } finally {
+      setLoadingShops(false);
+    }
+  };
+
+  useEffect(() => {
+    if (user?.is_superuser) {
+      fetchAllShops();
+    }
+  }, [user]);
+
+  // ==================== TOGGLE SHOP ACTIVE (superuser only) ====================
+  const toggleShopActive = async (shopId: string, currentActive: boolean) => {
+    setTogglingShopId(shopId);
+    try {
+      const response = await api.patch(`/admin/shops/${shopId}/`, {
+        is_active: !currentActive,
+      });
+      setAllShops(prev =>
+        prev.map(s => (s.id === shopId ? { ...s, is_active: response.data.is_active } : s))
+      );
+      if (shops.some(s => s.id === shopId)) {
+        await fetchShops();
+      }
+      addToast({
+        message: `Shop ${response.data.is_active ? 'activated' : 'deactivated'} successfully`,
+        type: 'success',
+      });
+    } catch (err: any) {
+      addToast({
+        message: err.response?.data?.error || 'Failed to update shop status',
+        type: 'error',
+      });
+    } finally {
+      setTogglingShopId(null);
+    }
+  };
+
   // ==================== FETCH SUBSCRIPTION ====================
   const fetchSubscription = useCallback(async () => {
-    // Only non‑superuser owners need to see subscription
     if (user?.role !== 'OWNER' || user?.is_superuser || !shop) return;
     setLoadingSub(true);
     try {
@@ -82,6 +145,11 @@ export default function Settings() {
 
   // ==================== FETCH CASHIERS ====================
   const fetchCashiers = useCallback(async () => {
+    // ✅ Guard: skip if offline
+    if (!navigator.onLine) {
+      console.log('[Settings] Offline – skipping cashier fetch');
+      return;
+    }
     if (user?.role !== 'OWNER') return;
     try {
       const params = new URLSearchParams({
@@ -191,6 +259,31 @@ export default function Settings() {
     }
   };
 
+  // ==================== CREATE SHOP (BRANCH) ====================
+  const handleCreateShop = async () => {
+    if (!newShopName.trim()) {
+      addToast({ message: 'Branch name is required.', type: 'warning' });
+      return;
+    }
+
+    setCreatingShop(true);
+    try {
+      await createShop(newShopName.trim(), newShopAddress.trim());
+      addToast({ message: `Branch "${newShopName.trim()}" created successfully!`, type: 'success' });
+      setShowCreateShopModal(false);
+      setNewShopName('');
+      setNewShopAddress('');
+      // ✅ No explicit fetchShops here — the Zustand state is already updated by createShop
+    } catch (err: any) {
+      addToast({
+        message: err.response?.data?.error || 'Failed to create branch.',
+        type: 'error',
+      });
+    } finally {
+      setCreatingShop(false);
+    }
+  };
+
   useEffect(() => {
     if (user?.email) {
       setEmailValue(user.email);
@@ -297,7 +390,72 @@ export default function Settings() {
         </div>
       </section>
 
-      {/* ✅ Subscription Plan Section – only for non‑superuser owners (regular shop owners) */}
+      {/* ✅ SUPERUSER – Manage All Shops */}
+      {user?.is_superuser && (
+        <section className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+          <div className="p-4 md:p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <BuildingStorefrontIcon className="h-5 w-5 text-purple-600" />
+              <h2 className="text-lg font-semibold text-gray-900">Manage All Shops</h2>
+              <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">Superuser</span>
+            </div>
+            {loadingShops ? (
+              <p className="text-sm text-gray-500">Loading shops...</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200 text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-2 text-left font-medium text-gray-500">Shop</th>
+                      <th className="px-4 py-2 text-left font-medium text-gray-500">Owner</th>
+                      <th className="px-4 py-2 text-left font-medium text-gray-500">Status</th>
+                      <th className="px-4 py-2 text-right font-medium text-gray-500">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {allShops.map((shopItem) => (
+                      <tr key={shopItem.id} className="hover:bg-gray-50">
+                        <td className="px-4 py-2 font-medium">{shopItem.name}</td>
+                        <td className="px-4 py-2">{shopItem.owner_phone || '—'}</td>
+                        <td className="px-4 py-2">
+                          <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
+                            shopItem.is_active ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                          }`}>
+                            {shopItem.is_active ? 'Active' : 'Inactive'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2 text-right">
+                          <button
+                            onClick={() => toggleShopActive(shopItem.id, shopItem.is_active)}
+                            disabled={togglingShopId === shopItem.id}
+                            className={`px-3 py-1.5 text-sm rounded-lg transition-colors touch-manipulation ${
+                              shopItem.is_active
+                                ? 'bg-red-50 text-red-600 hover:bg-red-100'
+                                : 'bg-green-50 text-green-600 hover:bg-green-100'
+                            } disabled:opacity-50`}
+                          >
+                            {togglingShopId === shopItem.id ? '...' : shopItem.is_active ? 'Deactivate' : 'Activate'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                    {allShops.length === 0 && (
+                      <tr>
+                        <td colSpan={4} className="px-4 py-8 text-center text-gray-400">No shops found.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <p className="text-xs text-gray-400 mt-3">
+              Deactivating a shop prevents all users from logging in. The shop's data is preserved and can be reactivated at any time.
+            </p>
+          </div>
+        </section>
+      )}
+
+      {/* ✅ Subscription Plan Section */}
       {user?.role === 'OWNER' && !user?.is_superuser && shop && (
         <section className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
           <div className="p-4 md:p-6">
@@ -347,6 +505,48 @@ export default function Settings() {
                 </Link>
               </div>
             )}
+          </div>
+        </section>
+      )}
+
+      {/* ✅ BRANCH MANAGEMENT – Add Branch (Owner only) */}
+      {user?.role === 'OWNER' && (
+        <section className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+          <div className="p-4 md:p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <BuildingStorefrontIcon className="h-5 w-5 text-blue-600" />
+              <h2 className="text-lg font-semibold text-gray-900">Branches</h2>
+            </div>
+            <p className="text-sm text-gray-500 mb-4">
+              Create and manage multiple branches for your business. Switch between branches using the dropdown in the sidebar.
+            </p>
+
+            {/* List existing branches */}
+            {shops.length > 0 && (
+              <div className="mb-4 p-3 bg-gray-50 rounded-lg">
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Your Branches</p>
+                <div className="space-y-1">
+                  {shops.map((s) => (
+                    <div key={s.id} className="flex items-center justify-between py-1.5 text-sm">
+                      <span className="flex items-center gap-2">
+                        <span className={`w-2 h-2 rounded-full ${s.id === shop?.id ? 'bg-green-500' : 'bg-gray-300'}`} />
+                        {s.name}
+                      </span>
+                      {s.id === shop?.id && (
+                        <span className="text-xs text-green-600 font-medium">(Active)</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <Button
+              onClick={() => setShowCreateShopModal(true)}
+              className="touch-manipulation"
+            >
+              <PlusIcon className="h-4 w-4 mr-1" /> Add New Branch
+            </Button>
           </div>
         </section>
       )}
@@ -510,7 +710,60 @@ export default function Settings() {
         </div>
       </section>
 
-      {/* Modals */}
+      {/* ====== CREATE SHOP MODAL ====== */}
+      <Modal
+        isOpen={showCreateShopModal}
+        onClose={() => {
+          setShowCreateShopModal(false);
+          setNewShopName('');
+          setNewShopAddress('');
+        }}
+        title="Create New Branch"
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Branch Name *</label>
+            <input
+              type="text"
+              value={newShopName}
+              onChange={(e) => setNewShopName(e.target.value)}
+              className="w-full p-2 border rounded-lg"
+              placeholder="e.g., Accra Branch"
+              autoFocus
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Address (optional)</label>
+            <input
+              type="text"
+              value={newShopAddress}
+              onChange={(e) => setNewShopAddress(e.target.value)}
+              className="w-full p-2 border rounded-lg"
+              placeholder="123 Main St, Accra"
+            />
+          </div>
+          <p className="text-xs text-gray-500">
+            You'll be able to switch to this branch from the sidebar after creation.
+          </p>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setShowCreateShopModal(false);
+                setNewShopName('');
+                setNewShopAddress('');
+              }}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleCreateShop} disabled={creatingShop}>
+              {creatingShop ? 'Creating...' : 'Create Branch'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Invite Cashier Modal */}
       <InviteCashierModal
         isOpen={showInviteModal}
         onClose={() => setShowInviteModal(false)}
@@ -521,6 +774,7 @@ export default function Settings() {
         }}
       />
 
+      {/* Reset Password Modal */}
       <Modal
         isOpen={showResetModal}
         onClose={() => {
@@ -550,6 +804,7 @@ export default function Settings() {
         </div>
       </Modal>
 
+      {/* Confirm Toggle Active Modal */}
       {showToggleConfirm && (
         <ConfirmModal
           title={toggleAction === 'deactivate' ? 'Deactivate Cashier' : 'Reactivate Cashier'}

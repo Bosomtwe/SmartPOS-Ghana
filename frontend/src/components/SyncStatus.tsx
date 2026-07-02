@@ -1,5 +1,5 @@
 // src/components/SyncStatus.tsx
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useSyncStore } from '../stores/syncStore';
 import { useCustomerStore } from '../stores/customerStore';
 import { CloudIcon, CloudArrowUpIcon, CheckCircleIcon } from '@heroicons/react/24/outline';
@@ -14,20 +14,24 @@ const CloudOffIcon = ({ className }: { className?: string }) => (
 );
 
 interface SyncStatusProps {
-  /** Renders a compact circle with status dot – ideal for headers / toolbars */
   compact?: boolean;
 }
 
 export const SyncStatus = ({ compact = false }: SyncStatusProps) => {
-  const { pendingSales, isSyncing, sync } = useSyncStore();
+  const { pendingSales, isSyncing, sync, lastSyncAttempt } = useSyncStore();
   const syncCreditPayments = useCustomerStore((s) => s.syncCreditPayments);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
+  const autoSyncTriggered = useRef(false);
+  const COOLDOWN_MS = 10000; // must match syncStore
 
-  // Track online/offline
+  // Online/offline listeners
   useEffect(() => {
     const hOnline = () => setIsOnline(true);
-    const hOffline = () => setIsOnline(false);
+    const hOffline = () => {
+      setIsOnline(false);
+      autoSyncTriggered.current = false; // reset when offline
+    };
     window.addEventListener('online', hOnline);
     window.addEventListener('offline', hOffline);
     return () => {
@@ -36,28 +40,43 @@ export const SyncStatus = ({ compact = false }: SyncStatusProps) => {
     };
   }, []);
 
-  // Auto‑sync when online and unsynced sales exist
+  // Auto-sync with debounce and once-per-online-session
   useEffect(() => {
-    if (isOnline && pendingSales > 0 && !isSyncing) {
-      sync();
-    }
-  }, [isOnline, pendingSales, isSyncing, sync]);
+    const timer = setTimeout(() => {
+      if (isOnline && pendingSales > 0 && !isSyncing && !autoSyncTriggered.current) {
+        const now = Date.now();
+        if (now - lastSyncAttempt >= COOLDOWN_MS) {
+          autoSyncTriggered.current = true;
+          sync();
+        }
+      }
+    }, 500); // debounce 500ms
 
-  // When we come online, also sync any offline credit payments
+    return () => clearTimeout(timer);
+  }, [isOnline, pendingSales, isSyncing, sync, lastSyncAttempt]);
+
+  // When pendingSales reaches 0, reset the flag so new sales can trigger sync
+  useEffect(() => {
+    if (pendingSales === 0) {
+      autoSyncTriggered.current = false;
+    }
+  }, [pendingSales]);
+
+  // Sync credit payments when coming online
   useEffect(() => {
     if (isOnline) {
       syncCreditPayments();
     }
   }, [isOnline, syncCreditPayments]);
 
-  // Mark last sync time when all syncing is done
+  // Update last sync time when all done
   useEffect(() => {
     if (!isSyncing && pendingSales === 0 && isOnline) {
       setLastSyncTime(new Date());
     }
   }, [isSyncing, pendingSales, isOnline]);
 
-  // ---------- Compact version (header) ----------
+  // Compact version (icon with dot)
   if (compact) {
     const statusColor = isOnline
       ? isSyncing
@@ -94,7 +113,7 @@ export const SyncStatus = ({ compact = false }: SyncStatusProps) => {
     );
   }
 
-  // ---------- Expanded version (original floating pill) ----------
+  // Expanded floating pill
   if (!isOnline) {
     return (
       <div className="fixed bottom-20 right-4 md:bottom-4 z-50 bg-red-100 text-red-700 px-3 py-2 rounded-full shadow-md flex items-center gap-2 text-sm">

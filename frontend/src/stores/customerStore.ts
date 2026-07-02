@@ -7,14 +7,29 @@ import { useUIStore } from './uiStore';
 import { useSalesStore } from './saleStore';
 import type { Sale } from '../lib/dexie';
 
-const parseCustomerFromApi = (raw: any): Customer => ({
-  id: raw.id,
-  name: raw.name,
-  phone: raw.phone || '',
-  totalCredit: Number(raw.total_credit),
-  creditLimit: raw.credit_limit !== null ? Number(raw.credit_limit) : undefined,
-  shopId: raw.shop,
-});
+const getShopId = async (): Promise<string | null> => {
+  const shop = useAuthStore.getState().shop;
+  if (shop?.id) return shop.id;
+  const stored = localStorage.getItem('shopId');
+  if (stored) return stored;
+  const anyCustomer = await db.customers.limit(1).first();
+  return anyCustomer?.shopId || null;
+};
+
+const parseCustomerFromApi = async (raw: any): Promise<Customer> => {
+  let shopId = raw.shop;
+  if (!shopId) {
+    shopId = await getShopId() || '';
+  }
+  return {
+    id: raw.id,
+    name: raw.name,
+    phone: raw.phone || '',
+    totalCredit: Number(raw.total_credit),
+    creditLimit: raw.credit_limit !== null ? Number(raw.credit_limit) : undefined,
+    shopId,
+  };
+};
 
 const toCamelSale = (raw: any): Sale => ({
   id: raw.id,
@@ -40,13 +55,28 @@ const toCamelSale = (raw: any): Sale => ({
   idempotencyKey: '',
 });
 
-const getShopId = async (): Promise<string | null> => {
-  const shop = useAuthStore.getState().shop;
-  if (shop?.id) return shop.id;
-  const stored = localStorage.getItem('shopId');
-  if (stored) return stored;
-  const anyCustomer = await db.customers.limit(1).first();
-  return anyCustomer?.shopId || null;
+const extractList = (data: any): any[] => {
+  if (Array.isArray(data)) return data;
+  if (data && Array.isArray(data.results)) return data.results;
+  console.warn('Unexpected API response format', data);
+  return [];
+};
+
+/** Fetch all results from a paginated endpoint. Works even if the server isn't paginated. */
+const fetchAllPages = async (url: string): Promise<any[]> => {
+  let results: any[] = [];
+  let nextUrl: string | null = url;
+
+  while (nextUrl) {
+    // Explicitly narrow for TypeScript
+    const currentUrl: string = nextUrl;
+    const response = await api.get(currentUrl);
+    const data = response.data;
+    results = results.concat(extractList(data));
+    nextUrl = data.next || null;
+  }
+
+  return results;
 };
 
 interface CustomerState {
@@ -61,6 +91,7 @@ interface CustomerState {
   recordPayment: (customerId: string, amount: number, note?: string, saleId?: string) => Promise<any>;
   syncCreditPayments: () => Promise<void>;
   refreshLocalBalances: () => Promise<void>;
+  clearCustomers: () => void;
 }
 
 export const useCustomerStore = create<CustomerState>((set, get) => ({
@@ -79,37 +110,60 @@ export const useCustomerStore = create<CustomerState>((set, get) => ({
       set({ loading: false, customers: [] });
       return;
     }
+    console.log('[customerStore] Current shopId:', shopId);
 
-    // Load cached customers (filtered)
-    let cached = await db.customers.where('shopId').equals(shopId).toArray();
-    if (cached.length === 0) {
-      const all = await db.customers.toArray();
-      if (all.length > 0) {
-        console.warn(`[customerStore] Filter returned 0, but total customers: ${all.length}. Using all.`);
-        cached = all;
+    const storeCustomers = get().customers;
+    const storeHasCorrectShop = storeCustomers.length > 0 && storeCustomers[0].shopId === shopId;
+
+    const shouldLoadFromCache = !navigator.onLine || !storeHasCorrectShop;
+
+    if (shouldLoadFromCache) {
+      console.log('[customerStore] Loading from IndexedDB...');
+      let cached = await db.customers.where('shopId').equals(shopId).toArray();
+      console.log(`[customerStore] IndexedDB query returned ${cached.length} customers for shopId ${shopId}`);
+
+      if (cached.length === 0) {
+        const all = await db.customers.toArray();
+        console.log(`[customerStore] All customers in IndexedDB: ${all.length}`);
+        cached = all.filter(c => c.shopId === shopId);
+        console.log(`[customerStore] After filtering, found ${cached.length} customers for shop ${shopId}`);
       }
-    }
 
-    if (cached.length > 0) {
-      console.log(`[customerStore] Loaded ${cached.length} customers from IndexedDB`);
-      set({ customers: cached, loading: false });
+      if (cached.length > 0) {
+        set({ customers: cached, loading: false });
+      } else {
+        console.log(`[customerStore] No customers found for shop ${shopId} in IndexedDB`);
+        set({ customers: [], loading: true });
+      }
     } else {
-      set({ customers: [], loading: true });
+      console.log(`[customerStore] Using existing ${get().customers.length} customers from store`);
+      set({ loading: true });
     }
 
-    // Sync online if possible
     if (navigator.onLine && localStorage.getItem('skipNextOnlineFetch') !== 'true') {
       try {
-        const response = await api.get('/customers/');
-        const fresh = response.data.map(parseCustomerFromApi);
+        console.log('[customerStore] Fetching fresh customers from server...');
+        const rawCustomers = await fetchAllPages('/customers/');
+        const fresh = await Promise.all(rawCustomers.map(parseCustomerFromApi));
         console.log(`[customerStore] Synced ${fresh.length} customers from server`);
-        await db.customers.bulkPut(fresh);
+
+        await db.customers.where('shopId').equals(shopId).delete();
+        console.log(`[customerStore] Cleared customers for shop ${shopId}`);
+
+        if (fresh.length > 0) {
+          await db.customers.bulkPut(fresh);
+        }
+
+        const verifyCount = await db.customers.where('shopId').equals(shopId).count();
+        console.log(`[customerStore] After sync, IndexedDB has ${verifyCount} customers for shop ${shopId}`);
         set({ customers: fresh, loading: false });
       } catch (err) {
         console.error('[customerStore] Background sync failed', err);
-        if (cached.length === 0) set({ loading: false });
+        if (get().customers.length === 0) {
+          set({ loading: false });
+        }
       }
-    } else if (cached.length === 0) {
+    } else if (get().customers.length === 0) {
       set({ loading: false });
     }
   },
@@ -122,7 +176,7 @@ export const useCustomerStore = create<CustomerState>((set, get) => ({
         phone: data.phone,
         credit_limit: data.creditLimit,
       });
-      const newCust = parseCustomerFromApi(response.data);
+      const newCust = await parseCustomerFromApi(response.data);
       await db.customers.put(newCust);
       set((state) => ({ customers: [...state.customers, newCust] }));
     } else {
@@ -147,7 +201,7 @@ export const useCustomerStore = create<CustomerState>((set, get) => ({
         phone: data.phone,
         credit_limit: data.creditLimit,
       });
-      const updated = parseCustomerFromApi(response.data);
+      const updated = await parseCustomerFromApi(response.data);
       await db.customers.put(updated);
       set((state) => ({
         customers: state.customers.map((c) => (c.id === id ? updated : c)),
@@ -295,13 +349,25 @@ export const useCustomerStore = create<CustomerState>((set, get) => ({
   refreshLocalBalances: async () => {
     if (!navigator.onLine) return;
     try {
-      const response = await api.get('/customers/');
-      const fresh = response.data.map(parseCustomerFromApi);
-      await db.customers.bulkPut(fresh);
+      const shopId = await getShopId();
+      if (!shopId) return;
+
+      const rawCustomers = await fetchAllPages('/customers/');
+      const fresh = await Promise.all(rawCustomers.map(parseCustomerFromApi));
+
+      await db.customers.where('shopId').equals(shopId).delete();
+      if (fresh.length > 0) {
+        await db.customers.bulkPut(fresh);
+      }
+
       set({ customers: fresh });
       console.log(`[customerStore] Refreshed balances, ${fresh.length} customers`);
     } catch (err) {
       console.error('Failed to refresh balances', err);
     }
+  },
+
+  clearCustomers: () => {
+    set({ customers: [] });
   },
 }));

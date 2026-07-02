@@ -14,6 +14,7 @@ from rest_framework.parsers import MultiPartParser
 import csv
 from django.http import HttpResponse
 from apps.audit.utils import log_action
+from datetime import datetime
 
 # ✅ Import subscription permissions
 from apps.subscriptions.permissions import MaxProductsPermission, HasSubscriptionFeature
@@ -52,6 +53,10 @@ class ProductListCreateView(generics.ListCreateAPIView):
         if not shop:
             raise PermissionError("User has no associated shop")
         instance = serializer.save(shop=shop)
+        # Set initial stock if not provided
+        if not instance.custom_fields.get('initial_stock'):
+            instance.custom_fields['initial_stock'] = instance.current_stock
+            instance.save(update_fields=['custom_fields'])
         cache.delete(f'product_list_{shop.id}')
 
 
@@ -153,7 +158,7 @@ class StockAdjustView(generics.GenericAPIView):
         return Response(ProductSerializer(product).data)
 
 
-# ✅ Bulk import – optimized with bulk_create/bulk_update and safe empty value handling
+# ✅ Bulk import – with expiry, initial_stock, and only 'name' required
 class BulkImportView(generics.GenericAPIView):
     parser_classes = [MultiPartParser]
     permission_classes = [permissions.IsAuthenticated, IsOwnerOrCashierReadOnly, HasSubscriptionFeature]
@@ -186,15 +191,19 @@ class BulkImportView(generics.GenericAPIView):
         }
         df.rename(columns=rename_map, inplace=True)
 
-        required = ['name', 'cost_price', 'selling_price', 'current_stock']
+        # ✅ Only require 'name'
+        required = ['name']
         missing = [col for col in required if col not in df.columns]
         if missing:
             return Response(
-                {'error': f'Missing required columns: {missing}. Found columns: {list(df.columns)}'},
+                {'error': f'Missing required column: {missing}. Found columns: {list(df.columns)}'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Safe converters: empty strings become 0
+        # ✅ Check for optional columns
+        expiry_col = 'expiry' if 'expiry' in df.columns else 'expiry_date' if 'expiry_date' in df.columns else None
+        has_initial_stock = 'initial_stock' in df.columns
+
         def to_float(val):
             if pd.isna(val) or str(val).strip() == '':
                 return 0.0
@@ -225,14 +234,46 @@ class BulkImportView(generics.GenericAPIView):
                 if not name:
                     raise ValueError("Product name is required")
 
-                cost_price = to_float(row['cost_price'])
-                selling_price = to_float(row['selling_price'])
-                current_stock = to_int(row['current_stock'])
+                # Optional fields with defaults
+                cost_price = to_float(row.get('cost_price', 0))
+                selling_price = to_float(row.get('selling_price', 0))
+                current_stock = to_int(row.get('current_stock', 0))
 
                 low_stock_val = row.get('low_stock_threshold', '')
                 low_stock_threshold = 5
                 if low_stock_val and str(low_stock_val).strip():
                     low_stock_threshold = to_int(low_stock_val)
+
+                # ✅ Build custom_fields
+                custom_fields = {}
+
+                # ✅ Handle expiry if column exists
+                if expiry_col:
+                    expiry_val = row.get(expiry_col)
+                    if expiry_val and str(expiry_val).strip():
+                        # Try to parse as ISO date (YYYY-MM-DD) or common formats
+                        parsed_date = None
+                        for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%Y/%m/%d'):
+                            try:
+                                parsed_date = datetime.strptime(str(expiry_val).strip(), fmt).date()
+                                break
+                            except ValueError:
+                                continue
+                        if parsed_date:
+                            custom_fields['expiry'] = parsed_date.isoformat()
+                        else:
+                            # fallback: store as string
+                            custom_fields['expiry'] = str(expiry_val)
+
+                # ✅ Handle initial_stock
+                if has_initial_stock:
+                    initial_val = row.get('initial_stock')
+                    if initial_val and str(initial_val).strip():
+                        custom_fields['initial_stock'] = to_int(initial_val)
+                    else:
+                        custom_fields['initial_stock'] = current_stock
+                else:
+                    custom_fields['initial_stock'] = current_stock
 
                 rows_data.append({
                     'name': name,
@@ -242,11 +283,11 @@ class BulkImportView(generics.GenericAPIView):
                     'sku': sku,
                     'low_stock_threshold': low_stock_threshold,
                     'is_active': True,
+                    'custom_fields': custom_fields,
                 })
             except Exception as e:
                 errors.append(f"Row {idx+2}: {str(e)}")
 
-        # If any row error, return early without any DB changes
         if errors:
             return Response({'created': 0, 'updated': 0, 'errors': errors}, status=status.HTTP_200_OK)
 
@@ -271,6 +312,7 @@ class BulkImportView(generics.GenericAPIView):
                 product.current_stock = data['current_stock']
                 product.low_stock_threshold = data['low_stock_threshold']
                 product.is_active = data['is_active']
+                product.custom_fields = data['custom_fields']
                 products_to_update.append(product)
             else:
                 products_to_create.append(Product(shop=shop, **data))
@@ -285,7 +327,8 @@ class BulkImportView(generics.GenericAPIView):
             if products_to_update:
                 Product.objects.bulk_update(
                     products_to_update,
-                    fields=['name', 'cost_price', 'selling_price', 'current_stock', 'low_stock_threshold', 'is_active']
+                    fields=['name', 'cost_price', 'selling_price', 'current_stock',
+                            'low_stock_threshold', 'is_active', 'custom_fields']
                 )
                 updated_count = len(products_to_update)
 
@@ -327,9 +370,14 @@ class ProductExportView(generics.GenericAPIView):
         response['Content-Disposition'] = 'attachment; filename="products.csv"'
 
         writer = csv.writer(response)
-        writer.writerow(['name', 'sku', 'cost_price', 'selling_price', 'current_stock', 'low_stock_threshold'])
+        writer.writerow([
+            'name', 'sku', 'cost_price', 'selling_price',
+            'current_stock', 'low_stock_threshold', 'expiry', 'initial_stock'
+        ])
 
         for p in products:
+            expiry = p.custom_fields.get('expiry', '') if p.custom_fields else ''
+            initial_stock = p.custom_fields.get('initial_stock', p.current_stock) if p.custom_fields else p.current_stock
             writer.writerow([
                 p.name,
                 p.sku or '',
@@ -337,6 +385,8 @@ class ProductExportView(generics.GenericAPIView):
                 p.selling_price,
                 p.current_stock,
                 p.low_stock_threshold,
+                expiry,
+                initial_stock,
             ])
 
         log_action(
@@ -356,5 +406,8 @@ class ProductTemplateView(generics.GenericAPIView):
         response = HttpResponse(content_type='text/csv')
         response['Content-Disposition'] = 'attachment; filename="product_import_template.csv"'
         writer = csv.writer(response)
-        writer.writerow(['name', 'SKU (Barcode)', 'cost_price', 'selling_price', 'current_stock', 'Low Stock Threshold'])
+        writer.writerow([
+            'name', 'SKU (Barcode)', 'cost_price', 'selling_price',
+            'current_stock', 'Low Stock Threshold', 'expiry', 'initial_stock'
+        ])
         return response

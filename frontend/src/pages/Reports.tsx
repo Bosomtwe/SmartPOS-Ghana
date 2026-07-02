@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react';
 import { useAuthStore } from '../stores/authStore';
 import api from '../services/api';
+import { getCashierList } from '../services/offlineUsers';
 import { db, type Customer } from '../lib/dexie';
 
 interface SaleDisplay {
@@ -31,15 +32,8 @@ async function getProductNameMap(productIds: string[]): Promise<Map<string, stri
   return map;
 }
 
-// ==================== DEBUG: Log a sale item warning ====================
-function logMissingNameWarning(saleId: string, productId: string, storedName: string | undefined, realName: string | undefined) {
-  if (!storedName || storedName === 'Unknown Product') {
-    console.warn(`[Reports] Sale ${saleId} item product ${productId} has stored name "${storedName}". Real product name: ${realName || 'NOT IN PRODUCTS TABLE'}`);
-  }
-}
-
 export default function Reports() {
-  const { token, shop } = useAuthStore();
+  const { user, token, shop } = useAuthStore();
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [sales, setSales] = useState<SaleDisplay[]>([]);
@@ -60,7 +54,21 @@ export default function Reports() {
   const [topTotalCount, setTopTotalCount] = useState(0);
   const topPageSize = 10;
 
-  // ----- OFFLINE DATA FETCHERS (FIXED & DEBUGGED) -----
+  // User filter state (owners only) – now includes owner + cashiers
+  const [users, setUsers] = useState<{ id: string; phone: string }[]>([]);
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+
+  // Determine effective userId for API calls
+  const effectiveUserId = user?.role === 'CASHIER' ? user.id : selectedUserId;
+
+  // Fetch cashiers AND add owner if owner role (online / cached offline)
+  useEffect(() => {
+    if (user?.role === 'OWNER') {
+      getCashierList().then(setUsers).catch(console.error);
+    }
+  }, [user]);
+
+  // ----- OFFLINE DATA FETCHERS (with userId filter) -----
   const fetchSalesLocal = async () => {
     if (!startDate || !endDate) return;
     setLoading(true);
@@ -70,12 +78,14 @@ export default function Reports() {
       const shopId = shop?.id || localStorage.getItem('shopId');
       if (!shopId) throw new Error('Shop not found');
 
-      // 1. Get all sales for this shop
       let allSales = await db.sales.where('shopId').equals(shopId).toArray();
       if (allSales.length === 0) allSales = await db.sales.toArray();
-      console.log(`[DEBUG] Found ${allSales.length} sales in IndexedDB`);
 
-      // 2. Filter by date range
+      // Apply userId filter if set
+      if (effectiveUserId) {
+        allSales = allSales.filter(s => s.userId === effectiveUserId);
+      }
+
       const start = new Date(startDate);
       start.setHours(0, 0, 0, 0);
       const end = new Date(endDate);
@@ -85,31 +95,22 @@ export default function Reports() {
         const saleDate = new Date(sale.createdAt);
         return saleDate >= start && saleDate <= end && sale.status === 'COMPLETED';
       });
-      console.log(`[DEBUG] ${filtered.length} sales after date filter`);
 
-      // 3. Collect all unique product IDs from these sales
+      // Collect product IDs
       const allProductIds = new Set<string>();
       filtered.forEach(sale => {
         sale.items.forEach(item => allProductIds.add(item.productId));
       });
-      console.log(`[DEBUG] Unique product IDs needed: ${Array.from(allProductIds).length}`);
 
-      // 4. Fetch product names from IndexedDB
       const productNameMap = await getProductNameMap(Array.from(allProductIds));
-      console.log(`[DEBUG] Resolved product names for ${productNameMap.size} products`);
 
-      // 5. Fetch customers (for names)
       const allCustomers = await db.customers.toArray();
       const customerMap = new Map<string, Customer>();
       allCustomers.forEach(c => customerMap.set(c.id, c));
 
-      // 6. Transform sales, filling missing product names from the map
       const transformed = filtered.map(sale => {
         const enrichedItems = sale.items.map(item => {
           const realName = productNameMap.get(item.productId);
-          // Debug warning if stored name is missing or differs
-          logMissingNameWarning(sale.id, item.productId, item.name, realName);
-
           return {
             product_detail: { name: realName || item.name || 'Product' },
             quantity: item.quantity,
@@ -126,7 +127,6 @@ export default function Reports() {
         };
       });
 
-      // 7. Sort newest first
       transformed.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
       setTotalCount(transformed.length);
@@ -135,7 +135,6 @@ export default function Reports() {
       const paged = transformed.slice(startIdx, startIdx + pageSize);
       setSales(paged);
     } catch (err: any) {
-      console.error('[DEBUG] fetchSalesLocal error:', err);
       setError(err.message || 'Failed to load local sales');
     } finally {
       setLoading(false);
@@ -153,6 +152,10 @@ export default function Reports() {
       let allSales = await db.sales.where('shopId').equals(shopId).toArray();
       if (allSales.length === 0) allSales = await db.sales.toArray();
 
+      if (effectiveUserId) {
+        allSales = allSales.filter(s => s.userId === effectiveUserId);
+      }
+
       const start = new Date(startDate);
       start.setHours(0, 0, 0, 0);
       const end = new Date(endDate);
@@ -163,7 +166,6 @@ export default function Reports() {
         return saleDate >= start && saleDate <= end && sale.status === 'COMPLETED';
       });
 
-      // Accumulate quantities & revenue per product
       const productMap = new Map<string, { quantity: number; revenue: number; nameHint: string }>();
       for (const sale of filteredSales) {
         for (const item of sale.items) {
@@ -181,23 +183,15 @@ export default function Reports() {
         }
       }
 
-      // Resolve real product names from the products table
       const allProductIds = Array.from(productMap.keys());
       const productNameMap = await getProductNameMap(allProductIds);
 
-      // Build final array with correct names
-      let products = Array.from(productMap.entries()).map(([id, data]) => {
-        const realName = productNameMap.get(id);
-        if (!realName) {
-          console.warn(`[DEBUG] Top products: product ${id} not found in products table. Using stored name hint: "${data.nameHint}"`);
-        }
-        return {
-          product_id: id,
-          product_name: realName || data.nameHint || 'Unknown Product',
-          total_quantity: data.quantity,
-          total_revenue: data.revenue,
-        };
-      });
+      let products = Array.from(productMap.entries()).map(([id, data]) => ({
+        product_id: id,
+        product_name: productNameMap.get(id) || data.nameHint || 'Unknown Product',
+        total_quantity: data.quantity,
+        total_revenue: data.revenue,
+      }));
 
       products.sort((a, b) => b.total_quantity - a.total_quantity);
 
@@ -207,13 +201,13 @@ export default function Reports() {
       const paged = products.slice(startIdx, startIdx + topPageSize);
       setTopProducts(paged);
     } catch (err: any) {
-      console.error('[DEBUG] fetchTopProductsLocal error:', err);
+      console.error('fetchTopProductsLocal error:', err);
     } finally {
       setLoadingTop(false);
     }
   };
 
-  // ----- ONLINE DATA FETCHERS (unchanged) -----
+  // ----- ONLINE DATA FETCHERS (with userId) -----
   const fetchSalesOnline = async (resetPage = true) => {
     if (!navigator.onLine) return;
     if (!startDate || !endDate) return;
@@ -221,14 +215,15 @@ export default function Reports() {
     setLoading(true);
     setError('');
     try {
-      const res = await api.get('/reports/sales/json/', {
-        params: {
-          start_date: startDate,
-          end_date: endDate,
-          page: resetPage ? 1 : page,
-          page_size: pageSize,
-        },
-      });
+      const params: any = {
+        start_date: startDate,
+        end_date: endDate,
+        page: resetPage ? 1 : page,
+        page_size: pageSize,
+      };
+      if (effectiveUserId) params.user_id = effectiveUserId;
+
+      const res = await api.get('/reports/sales/json/', { params });
       setSales(res.data.results);
       setTotalCount(res.data.count);
       setTotalPages(Math.ceil(res.data.count / pageSize));
@@ -245,14 +240,15 @@ export default function Reports() {
     if (resetPage) setTopPage(1);
     setLoadingTop(true);
     try {
-      const res = await api.get('/reports/top-products/', {
-        params: {
-          start_date: startDate,
-          end_date: endDate,
-          page: resetPage ? 1 : topPage,
-          page_size: topPageSize,
-        },
-      });
+      const params: any = {
+        start_date: startDate,
+        end_date: endDate,
+        page: resetPage ? 1 : topPage,
+        page_size: topPageSize,
+      };
+      if (effectiveUserId) params.user_id = effectiveUserId;
+
+      const res = await api.get('/reports/top-products/', { params });
       setTopProducts(res.data.results);
       setTopTotalCount(res.data.count);
       setTopTotalPages(Math.ceil(res.data.count / topPageSize));
@@ -289,21 +285,104 @@ export default function Reports() {
     else if (!navigator.onLine && topPage) fetchTopProductsLocal();
   }, [topPage]);
 
+  // Re‑fetch when userId changes (owner selects a different user)
+  useEffect(() => {
+    if (startDate && endDate) {
+      loadData(true);
+    }
+  }, [effectiveUserId]);
+
+  // ✅ UPDATED: downloadCSV now supports offline
   const downloadCSV = async () => {
     if (!startDate || !endDate) return;
-    if (!navigator.onLine) {
-      setError('Cannot download CSV while offline. Please reconnect.');
-      return;
-    }
     setLoading(true);
     setError('');
+
     try {
-      const response = await fetch(
-        `/api/v1/reports/sales/?start_date=${startDate}&end_date=${endDate}`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      if (!response.ok) throw new Error('Export failed');
-      const blob = await response.blob();
+      let csvContent = '';
+      let rows: string[][] = [];
+
+      // --- OFFLINE PATH ---
+      if (!navigator.onLine) {
+        const shopId = shop?.id || localStorage.getItem('shopId');
+        if (!shopId) throw new Error('Shop not found');
+
+        let allSales = await db.sales.where('shopId').equals(shopId).toArray();
+        if (allSales.length === 0) allSales = await db.sales.toArray();
+
+        if (effectiveUserId) {
+          allSales = allSales.filter(s => s.userId === effectiveUserId);
+        }
+
+        const start = new Date(startDate);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+
+        const filtered = allSales.filter(sale => {
+          const saleDate = new Date(sale.createdAt);
+          return saleDate >= start && saleDate <= end && sale.status === 'COMPLETED';
+        });
+
+        // Get product names
+        const allProductIds = new Set<string>();
+        filtered.forEach(sale => {
+          sale.items.forEach(item => allProductIds.add(item.productId));
+        });
+        const productNameMap = await getProductNameMap(Array.from(allProductIds));
+
+        // Get customer names
+        const allCustomers = await db.customers.toArray();
+        const customerMap = new Map<string, Customer>();
+        allCustomers.forEach(c => customerMap.set(c.id, c));
+
+        // Sort by date descending
+        filtered.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+        // Build CSV rows
+        rows = filtered.map(sale => {
+          const itemsSummary = sale.items
+            .map(item => {
+              const name = productNameMap.get(item.productId) || item.name || 'Unknown Product';
+              return `${name} x${item.quantity}`;
+            })
+            .join('; ');
+
+          return [
+            sale.id,
+            sale.createdAt.toISOString().replace('T', ' ').slice(0, 16),
+            sale.customerId ? (customerMap.get(sale.customerId)?.name || 'Guest') : 'Guest',
+            sale.totalAmount.toFixed(2),
+            sale.discount.toFixed(2),
+            sale.paymentMethod,
+            itemsSummary,
+          ];
+        });
+
+        csvContent = [
+          ['Sale ID', 'Date', 'Customer', 'Total Amount', 'Discount', 'Payment Method', 'Items'].join(','),
+          ...rows.map(row => row.join(',')),
+        ].join('\n');
+      }
+
+      // --- ONLINE PATH ---
+      else {
+        const params = new URLSearchParams({
+          start_date: startDate,
+          end_date: endDate,
+        });
+        if (effectiveUserId) params.append('user_id', effectiveUserId);
+
+        const response = await fetch(
+          `/api/v1/reports/sales/?${params.toString()}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (!response.ok) throw new Error('Export failed');
+        csvContent = await response.text();
+      }
+
+      // Download the file
+      const blob = new Blob([csvContent], { type: 'text/csv' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -357,9 +436,26 @@ export default function Reports() {
             className="border p-2 rounded"
           />
         </div>
+
+        {user?.role === 'OWNER' && (
+          <div>
+            <label className="block text-sm font-medium">User</label>
+            <select
+              value={selectedUserId || ''}
+              onChange={(e) => setSelectedUserId(e.target.value || null)}
+              className="border rounded px-3 py-2 bg-white min-w-[140px]"
+            >
+              <option value="">All Users</option>
+              {users.map(u => (
+                <option key={u.id} value={u.id}>{u.phone}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
         <button
           onClick={downloadCSV}
-          disabled={!startDate || !endDate || loading || !navigator.onLine}
+          disabled={!startDate || !endDate || loading}
           className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-50"
         >
           {loading ? 'Downloading...' : 'Download CSV'}

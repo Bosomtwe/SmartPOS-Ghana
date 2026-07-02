@@ -23,8 +23,13 @@ const processQueue = (error: any, token: string | null = null) => {
   failedQueue = [];
 };
 
+// Request interceptor – block all requests when offline
 api.interceptors.request.use(
   (config) => {
+    if (!navigator.onLine) {
+      return Promise.reject(new Error('Offline – no network connection'));
+    }
+
     const token = useAuthStore.getState().token;
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
@@ -38,6 +43,10 @@ api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config;
+    // ✅ Guard against missing config
+    if (!originalRequest) {
+      return Promise.reject(error);
+    }
 
     // Skip refresh for auth endpoints
     if (
@@ -98,7 +107,6 @@ api.interceptors.response.use(
       return api(originalRequest);
     } catch (refreshError) {
       processQueue(refreshError, null);
-      // Only logout if online; offline we keep the session for offline detection
       if (navigator.onLine) {
         useAuthStore.getState().logout();
       } else {

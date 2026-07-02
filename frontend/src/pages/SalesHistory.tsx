@@ -4,26 +4,61 @@ import { useSalesStore } from '../stores/saleStore';
 import { useUIStore } from '../stores/uiStore';
 import { useAuthStore } from '../stores/authStore';
 import { useCustomerStore } from '../stores/customerStore';
-import { useProductStore } from '../stores/productStore'; // ✅ import product store
+import { useProductStore } from '../stores/productStore';
 import { ReceiptModal } from '../components/ReceiptModal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { PaginationBar } from '../components/PaginationBar';
+import { getCashierList } from '../services/offlineUsers';
 import {
   MagnifyingGlassIcon,
   XCircleIcon,
   DocumentTextIcon,
+  CalendarIcon,
 } from '@heroicons/react/24/outline';
 import type { Sale } from '../lib/dexie';
 
 const formatCurrency = (amount: number) => `GHS ${amount.toFixed(2)}`;
+
+//New offline userfilter
+const CASHIERS_CACHE_KEY = 'cashiers_cache';
+
+function getCachedCashiers(): { id: string; phone: string }[] {
+  try {
+    const raw = localStorage.getItem(CASHIERS_CACHE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+    }
+  }
+
+  function setCachedCashiers(cashiers: { id: string; phone: string }[]) {
+    try {
+      localStorage.setItem(CASHIERS_CACHE_KEY, JSON.stringify(cashiers));
+    } catch {
+      // localStorage full – ignore
+    }
+  }
+
+  function addOwnerToList(
+    list: { id: string; phone: string }[],
+    owner: { id: string; phone: string } | null
+  ): { id: string; phone: string }[] {
+    if (!owner?.id || !owner?.phone) return list;
+    // avoid duplicates
+    if (list.some(u => u.id === owner.id)) return list;
+    return [{ id: owner.id, phone: owner.phone }, ...list];
+  }
+
 
 export default function SalesHistory() {
   const { sales, loading, fetchSales, voidSale } = useSalesStore();
   const { user } = useAuthStore();
   const { addToast } = useUIStore();
   const { customers, fetchCustomers } = useCustomerStore();
-  const { fetchProducts } = useProductStore(); // ✅ get product fetch function
+  const { fetchProducts } = useProductStore();
 
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterPayment, setFilterPayment] = useState<string>('ALL');
   const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
@@ -31,12 +66,63 @@ export default function SalesHistory() {
   const [voidTarget, setVoidTarget] = useState<string | null>(null);
   const [voiding, setVoiding] = useState(false);
 
-  // ✅ Pre‑fetch products when page loads (so receipts open instantly)
+  // 🔹 User filter state (owners only) – now includes owner + cashiers
+  const [users, setUsers] = useState<{ id: string; phone: string }[]>([]);
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+
+  // Load products & customers once
   useEffect(() => {
     fetchProducts();
-    fetchSales();
     fetchCustomers();
-  }, [fetchProducts, fetchSales, fetchCustomers]);
+  }, [fetchProducts, fetchCustomers]);
+
+  // Fetch cashiers AND add owner if owner role (online / cached offline)
+  /*
+  useEffect(() => {
+    if (user?.role === 'OWNER') {
+      getCashierList().then(setUsers).catch(console.error);
+    }
+  }, [user]);*/
+
+  //New Offline userfilter
+  useEffect(() => {
+    if (user?.role !== 'OWNER') return;
+
+    const loadUsers = async () => {
+      if (navigator.onLine) {
+        try {
+          const cashiers = await getCashierList(); // fetch from server
+          const combined = addOwnerToList(cashiers, user);
+          setUsers(combined);
+          // Cache the fresh list for offline use
+          setCachedCashiers(combined); // cache includes owner
+        } catch (err) {
+          console.warn('Failed to fetch cashiers, using cache', err);
+          const cached = getCachedCashiers();
+          setUsers(addOwnerToList(cached, user));
+        }
+      } else {
+        // Offline – load from cache + always add the current owner
+        const cached = getCachedCashiers();
+        setUsers(addOwnerToList(cached, user));
+      }
+    };
+
+    loadUsers();
+  }, [user]);
+
+  // Determine effective userId for API calls
+  const effectiveUserId = user?.role === 'CASHIER' ? user.id : selectedUserId;
+
+  // Fetch sales with date & userId filters
+  useEffect(() => {
+    fetchSales(
+      startDate || undefined,
+      endDate || undefined,
+      1,
+      effectiveUserId || undefined
+    );
+  }, [fetchSales, startDate, endDate, effectiveUserId]);
 
   const getCustomerName = (customerId?: string): string => {
     if (!customerId) return '—';
@@ -44,6 +130,7 @@ export default function SalesHistory() {
     return customer ? customer.name : customerId;
   };
 
+  // Client-side filtering for search & payment method only
   const filtered = sales
     .filter(sale => {
       const matchQuery =
@@ -73,32 +160,85 @@ export default function SalesHistory() {
     }
   };
 
+  const clearDateFilters = () => {
+    setStartDate('');
+    setEndDate('');
+  };
+
   return (
     <div className="p-3 md:p-6 max-w-7xl mx-auto">
       <h1 className="text-2xl font-bold mb-5">Sales History</h1>
 
       {/* Filters */}
-      <div className="flex flex-col sm:flex-row gap-3 mb-5">
-        <div className="relative flex-1">
-          <MagnifyingGlassIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
-          <input
-            type="text"
-            placeholder="Search by receipt #, customer, Momo..."
-            className="w-full pl-10 pr-4 py-2.5 border rounded-xl text-sm"
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-          />
+      <div className="flex flex-col gap-3 mb-5">
+        {/* Date filter row */}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2">
+            <CalendarIcon className="h-4 w-4 text-gray-400" />
+            <label className="text-sm text-gray-600">From:</label>
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="border rounded-lg px-3 py-2 text-sm"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-gray-600">To:</label>
+            <input
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              className="border rounded-lg px-3 py-2 text-sm"
+            />
+          </div>
+          {(startDate || endDate) && (
+            <button
+              onClick={clearDateFilters}
+              className="text-xs text-red-600 hover:underline touch-manipulation"
+            >
+              Clear
+            </button>
+          )}
         </div>
-        <select
-          value={filterPayment}
-          onChange={e => setFilterPayment(e.target.value)}
-          className="border rounded-xl px-4 py-2.5 text-sm bg-white"
-        >
-          <option value="ALL">All Methods</option>
-          <option value="CASH">Cash</option>
-          <option value="MOMO">MoMo</option>
-          <option value="CREDIT">Credit</option>
-        </select>
+
+        {/* Search, payment filter, and user dropdown */}
+        <div className="flex flex-col sm:flex-row gap-3">
+          <div className="relative flex-1">
+            <MagnifyingGlassIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Search by receipt #, customer, Momo..."
+              className="w-full pl-10 pr-4 py-2.5 border rounded-xl text-sm"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+            />
+          </div>
+          <select
+            value={filterPayment}
+            onChange={e => setFilterPayment(e.target.value)}
+            className="border rounded-xl px-4 py-2.5 text-sm bg-white"
+          >
+            <option value="ALL">All Methods</option>
+            <option value="CASH">Cash</option>
+            <option value="MOMO">MoMo</option>
+            <option value="CREDIT">Credit</option>
+          </select>
+
+          {/* 🔹 User dropdown – only for owners (now includes owner) */}
+          {user?.role === 'OWNER' && (
+            <select
+              value={selectedUserId || ''}
+              onChange={(e) => setSelectedUserId(e.target.value || null)}
+              className="border rounded-xl px-4 py-2.5 text-sm bg-white min-w-[140px]"
+            >
+              <option value="">All Users</option>
+              {users.map(u => (
+                <option key={u.id} value={u.id}>{u.phone}</option>
+              ))}
+            </select>
+          )}
+        </div>
       </div>
 
       {/* Loading / empty states */}
@@ -134,13 +274,22 @@ export default function SalesHistory() {
                   </span>
                 </div>
 
+                {sale.isBackdated && (
+                  <div className="mb-2 text-xs text-orange-600 font-medium flex items-center gap-1">
+                    <span>⏪</span> Backdated
+                    {sale.originalCreatedAt && (
+                      <span className="text-gray-400 text-[10px]" title="Original timestamp">
+                        (orig: {new Date(sale.originalCreatedAt).toLocaleString()})
+                      </span>
+                    )}
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 gap-y-1 text-sm">
                   <span className="text-gray-500">Method:</span>
                   <span className="font-medium">{sale.paymentMethod}</span>
-
                   <span className="text-gray-500">Total:</span>
                   <span className="font-bold">{formatCurrency(sale.totalAmount)}</span>
-
                   {sale.paymentMethod === 'CREDIT' && (
                     <>
                       <span className="text-gray-500">Paid / Balance:</span>
@@ -152,7 +301,6 @@ export default function SalesHistory() {
                       </span>
                     </>
                   )}
-
                   <span className="text-gray-500">Customer:</span>
                   <span className="truncate">
                     {sale.paymentMethod === 'CREDIT'
@@ -188,7 +336,7 @@ export default function SalesHistory() {
             ))}
           </div>
 
-          {/* Desktop: table view */}
+          {/* Desktop table view */}
           <div className="hidden md:block bg-white rounded-xl shadow overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
@@ -201,6 +349,7 @@ export default function SalesHistory() {
                   <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Balance</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Customer</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Backdated</th>
                   <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
                 </tr>
               </thead>
@@ -236,6 +385,15 @@ export default function SalesHistory() {
                         <span className="px-2 py-1 text-xs font-bold rounded-full bg-red-100 text-red-700">VOIDED</span>
                       ) : (
                         <span className="px-2 py-1 text-xs font-bold rounded-full bg-green-100 text-green-700">Completed</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-sm">
+                      {sale.isBackdated ? (
+                        <span className="inline-flex items-center gap-1 text-orange-600 font-medium" title={sale.originalCreatedAt ? `Original: ${new Date(sale.originalCreatedAt).toLocaleString()}` : ''}>
+                          ⏪ Backdated
+                        </span>
+                      ) : (
+                        <span className="text-gray-400">—</span>
                       )}
                     </td>
                     <td className="px-4 py-3 text-right space-x-2">

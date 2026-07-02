@@ -1,4 +1,5 @@
-import { useEffect, useState, memo, useCallback } from 'react';
+// src/components/AuditLogTable.tsx
+import { useEffect, useState, useCallback, memo, useMemo } from 'react';
 import { useAuditStore } from '../stores/auditStore';
 import { useAuthStore } from '../stores/authStore';
 import { Button } from './Button';
@@ -59,25 +60,42 @@ export const AuditLogTable = memo(() => {
     end_date: '',
   });
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
   const [page, setPage] = useState(1);
   const pageSize = 50;
 
-  // Track which row's details are expanded
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
 
   const isOwner = user?.role === 'OWNER';
 
+  // Debounce search term (500ms)
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearchTerm(searchTerm);
+    }, 500);
+    return () => clearTimeout(handler);
+  }, [searchTerm]);
+
+  // Fetch logs when any filter or debounced search changes
   useEffect(() => {
     if (!isOwner) return;
     fetchLogs({
       action: filters.action || undefined,
-      search: searchTerm || undefined,
+      search: debouncedSearchTerm || undefined,
       start_date: filters.start_date || undefined,
       end_date: filters.end_date || undefined,
       page,
       page_size: pageSize,
     });
-  }, [isOwner, filters.action, searchTerm, filters.start_date, filters.end_date, page, fetchLogs]);
+  }, [
+    isOwner,
+    filters.action,
+    debouncedSearchTerm,
+    filters.start_date,
+    filters.end_date,
+    page,
+    fetchLogs,
+  ]);
 
   const handleFilterChange = useCallback((key: string, value: string) => {
     setFilters((prev) => ({ ...prev, [key]: value }));
@@ -119,13 +137,16 @@ export const AuditLogTable = memo(() => {
 
   const totalPages = Math.ceil(total / pageSize);
 
-  if (!isOwner) return null;
-
-  const FilterBar = () => (
+  // Memoize the filter bar to prevent unnecessary re-creation of its children
+  const filterBar = useMemo(() => (
     <div className="flex flex-wrap gap-4 items-end">
       <div className="flex-1 min-w-[200px]">
         <label className="block text-sm font-medium text-gray-700 mb-1">Search</label>
-        <AuditSearchBar onSearch={setSearchTerm} />
+        <AuditSearchBar 
+          key="audit-search-bar"   // 👈 stable key to prevent unmount
+          value={searchTerm} 
+          onChange={setSearchTerm} 
+        />
       </div>
       <div className="w-48">
         <label className="block text-sm font-medium text-gray-700 mb-1">Action</label>
@@ -180,22 +201,23 @@ export const AuditLogTable = memo(() => {
         </Button>
       </div>
     </div>
-  );
+  ), [searchTerm, filters, loading, logs.length, handleFilterChange, handleRefresh, handleExport]);
+
+  if (!isOwner) return null;
 
   if (error) {
     return (
       <div className="space-y-4">
         <div className="bg-red-50 text-red-600 p-4 rounded-lg">{error}</div>
-        <FilterBar />
+        {filterBar}
       </div>
     );
   }
 
   return (
     <div className="space-y-4">
-      <FilterBar />
+      {filterBar}
 
-      {/* Table */}
       <div className="overflow-x-auto bg-white rounded-xl shadow border">
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
@@ -262,7 +284,6 @@ export const AuditLogTable = memo(() => {
           </tbody>
         </table>
 
-        {/* Expanded details rows */}
         {logs.map((log) =>
           expandedRows.has(log.id) ? (
             <div key={`detail-${log.id}`} className="bg-gray-50 px-6 py-3 border-t border-gray-100">

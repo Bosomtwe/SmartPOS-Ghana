@@ -19,7 +19,6 @@ import {
   Squares2X2Icon,
   ListBulletIcon,
 } from '@heroicons/react/24/outline';
-import api from '../services/api';
 import type { Sale } from '../lib/dexie';
 import { db } from '../lib/dexie';
 
@@ -98,17 +97,23 @@ export default function Pos() {
       console.error('Failed to fetch product names from Dexie', e);
     }
 
+    const isBackdated = !!metadata?.created_at;
+    const createdAt = isBackdated ? new Date(metadata.created_at) : new Date();
+
     const sale: Sale = {
       id: crypto.randomUUID(),
       shopId: shop.id,
       userId: user.id,
+      userPhone: user.phone,                // ✅ Store the cashier's phone
       customerId: customerId || undefined,
       totalAmount: finalTotal,
       discount: discountAmount,
       paymentMethod: paymentMethod as 'CASH' | 'MOMO' | 'CREDIT',
       momoNumber: momoNumber,
       status: 'COMPLETED',
-      createdAt: new Date(),
+      createdAt: createdAt,
+      isBackdated: isBackdated,
+      originalCreatedAt: isBackdated ? new Date() : null,
       synced: false,
       items: rawItems.map((item) => ({
         ...item,
@@ -116,6 +121,10 @@ export default function Pos() {
       })),
       idempotencyKey: crypto.randomUUID(),
     };
+
+    if (isBackdated) {
+      console.log(`[Backdated Sale] ID: ${sale.id}, Original timestamp: ${new Date().toISOString()}, Backdated to: ${sale.createdAt.toISOString()}`);
+    }
 
     setShowPaymentModal(false);
     setCompletedSale(sale);
@@ -128,39 +137,7 @@ export default function Pos() {
     });
 
     try {
-      if (navigator.onLine) {
-        try {
-          const payload = {
-            id: sale.id,
-            shop: sale.shopId,
-            user: sale.userId,
-            customer: sale.customerId,
-            total_amount: sale.totalAmount,
-            discount: sale.discount,
-            payment_method: sale.paymentMethod,
-            momo_number: sale.momoNumber || '',
-            status: sale.status,
-            items: sale.items.map(item => ({
-              product: item.productId,
-              quantity: item.quantity,
-              unit_price: item.unitPrice,
-              total: item.total,
-            })),
-            idempotency_key: sale.idempotencyKey,
-          };
-          await api.post('/sales/', payload);
-          sale.synced = true;
-        } catch (err: any) {
-          console.error('Server sync failed:', err?.response?.status, err?.message);
-          addToast({
-            message: 'Sale recorded locally, but server sync failed.',
-            type: 'error',
-            duration: 8000,
-          });
-          sale.synced = false;
-        }
-      }
-      await addSale({ ...sale, synced: sale.synced });
+      await addSale(sale);
       useProductStore.getState().fetchProducts().catch(() => {});
     } catch (dbError) {
       console.error('Local DB save failed:', dbError);
@@ -181,7 +158,6 @@ export default function Pos() {
   const headerHeight = 80;
   const cartHeight = items.length > 0 && !showReceiptModal ? 120 : 0;
 
-  // Show loading until first products are loaded (from cache or sync)
   if (productsLoading && products.length === 0 && !fullyLoaded) {
     return <div className="flex items-center justify-center h-screen">Loading products...</div>;
   }

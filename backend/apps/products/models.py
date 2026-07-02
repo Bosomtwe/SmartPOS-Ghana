@@ -2,7 +2,7 @@ from django.db import models
 from apps.core.models import BaseModel
 from apps.users.models import Shop, User
 
-# Create your models here.
+
 class Product(BaseModel):
     shop = models.ForeignKey(Shop, on_delete=models.CASCADE, related_name='products')
     name = models.CharField(max_length=255)
@@ -13,11 +13,15 @@ class Product(BaseModel):
     low_stock_threshold = models.IntegerField(default=5)
     is_active = models.BooleanField(default=True)
 
+    # ✅ NEW: flexible JSON field for any extra data (expiry, shelf, supplier, etc.)
+    custom_fields = models.JSONField(default=dict, blank=True)
+
     class Meta:
         unique_together = ('shop', 'sku')  # SKU unique per shop
 
     def __str__(self):
         return self.name
+
 
 class InventoryTransaction(BaseModel):
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='transactions')

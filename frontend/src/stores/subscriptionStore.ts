@@ -2,6 +2,7 @@
 import { create } from 'zustand';
 import { db } from '../lib/dexie';
 import api from '../services/api';
+import { useAuthStore } from './authStore';
 
 interface Plan {
   id: string;
@@ -38,7 +39,6 @@ export const useSubscriptionStore = create<SubscriptionState>((set, get) => ({
   fetchPlans: async () => {
     set({ loading: true, error: null });
 
-    // 1. Load cached plans
     try {
       const cached = await db.subscriptionPlans.toArray();
       if (cached.length) {
@@ -48,7 +48,6 @@ export const useSubscriptionStore = create<SubscriptionState>((set, get) => ({
       console.warn('Failed to load cached plans', e);
     }
 
-    // 2. Fetch fresh if online
     if (navigator.onLine) {
       try {
         const res = await api.get('/subscriptions/plans/');
@@ -67,7 +66,7 @@ export const useSubscriptionStore = create<SubscriptionState>((set, get) => ({
   fetchCurrent: async () => {
     set({ loading: true, error: null });
 
-    // 1. Load cached current subscription
+    // 1. Load cached
     try {
       const cached = await db.currentSubscription.toArray();
       if (cached.length) {
@@ -81,9 +80,36 @@ export const useSubscriptionStore = create<SubscriptionState>((set, get) => ({
     if (navigator.onLine) {
       try {
         const res = await api.get('/subscriptions/current/');
-        const fresh = res.data;
-        await db.currentSubscription.clear();
-        await db.currentSubscription.add(fresh);
+        let fresh = res.data;
+
+        // ✅ Guard: if fresh is null, undefined, empty string, or empty array -> treat as no subscription
+        if (
+          fresh === null ||
+          fresh === undefined ||
+          (typeof fresh === 'string' && fresh.trim() === '') ||
+          (Array.isArray(fresh) && fresh.length === 0)
+        ) {
+          // Clear the cache and set current to null
+          await db.currentSubscription.clear();
+          set({ current: null, loading: false });
+          return;
+        }
+
+        // ✅ Ensure fresh is an object (and not an array)
+        if (typeof fresh !== 'object' || Array.isArray(fresh)) {
+          console.warn('Invalid subscription data received, clearing cache');
+          await db.currentSubscription.clear();
+          set({ current: null, loading: false });
+          return;
+        }
+
+        // ✅ Ensure the object has an id (use shop.id if missing)
+        if (!fresh.id) {
+          const shop = useAuthStore.getState().shop;
+          fresh.id = shop?.id || crypto.randomUUID();
+        }
+
+        await db.currentSubscription.put(fresh);
         set({ current: fresh, loading: false });
       } catch (err: any) {
         console.error('Failed to fetch current subscription', err);
@@ -96,7 +122,6 @@ export const useSubscriptionStore = create<SubscriptionState>((set, get) => ({
 
   startTrial: async () => {
     if (!navigator.onLine) {
-      // Queue trial activation for later sync
       const queue = JSON.parse(localStorage.getItem('offline_subscription_queue') || '[]');
       queue.push({ type: 'START_TRIAL', timestamp: Date.now() });
       localStorage.setItem('offline_subscription_queue', JSON.stringify(queue));

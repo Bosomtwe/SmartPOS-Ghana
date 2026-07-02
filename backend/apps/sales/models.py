@@ -16,6 +16,10 @@ class Sale(BaseModel):
     void_reason = models.TextField(blank=True)
     idempotency_key = models.CharField(max_length=255, blank=True, null=True, db_index=True, unique=True)
 
+    # ✅ NEW: Backdating audit fields
+    is_backdated = models.BooleanField(default=False)
+    original_created_at = models.DateTimeField(null=True, blank=True)
+
     def __str__(self):
         return f"Sale {self.id}"
 
@@ -24,6 +28,7 @@ class Sale(BaseModel):
             models.Index(fields=['shop', 'created_at']),
             models.Index(fields=['shop', 'status']),
             models.Index(fields=['customer']),
+            models.Index(fields=['is_backdated']),  # ✅ for filtering backdated sales
         ]
 
 

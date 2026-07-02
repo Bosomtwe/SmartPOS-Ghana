@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import { useCartStore } from '../stores/cartStore';
 import { useUIStore } from '../stores/uiStore';
 import type { Product } from '../lib/dexie';
+import { DEFAULT_EXPIRY_ALERT_DAYS } from '../constants';
 
 interface ProductCardProps {
   product: Product;
@@ -15,8 +16,7 @@ export const ProductCard = ({ product, onFlyStart }: ProductCardProps) => {
   const { addItem } = useCartStore();
   const { addToast, productCardDensity } = useUIStore();
   const isCompact = productCardDensity === 'compact';
-  
-  // Detect landscape orientation
+
   const [isLandscape, setIsLandscape] = useState(false);
   useEffect(() => {
     const check = () => setIsLandscape(window.innerHeight < window.innerWidth);
@@ -33,6 +33,17 @@ export const ProductCard = ({ product, onFlyStart }: ProductCardProps) => {
   const isOutOfStock = currentStock <= 0;
   const isLowStock = !isOutOfStock && currentStock <= lowStockThreshold;
 
+  // ✅ Expiry handling with custom alert days
+  const expiry = product.customFields?.expiry;
+  const alertDays = product.customFields?.expiry_alert_days ?? DEFAULT_EXPIRY_ALERT_DAYS;
+  const daysUntilExpiry = expiry
+    ? Math.ceil((new Date(expiry).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+    : null;
+  const isExpiringSoon =
+    daysUntilExpiry !== null &&
+    daysUntilExpiry >= 0 &&
+    daysUntilExpiry <= alertDays;
+
   const handleClick = () => {
     if (isOutOfStock) {
       addToast({
@@ -48,7 +59,7 @@ export const ProductCard = ({ product, onFlyStart }: ProductCardProps) => {
     addItem(product);
   };
 
-  // Landscape compact mode: horizontal card
+  // Landscape compact mode
   if (isLandscape && isCompact) {
     return (
       <motion.button
@@ -56,8 +67,7 @@ export const ProductCard = ({ product, onFlyStart }: ProductCardProps) => {
         onClick={handleClick}
         disabled={isOutOfStock}
         whileTap={{ scale: 0.98 }}
-        className="flex items-center gap-2 p-2 bg-white rounded-xl shadow-card text-left w-full
-                   hover:shadow-card-hover transition-shadow"
+        className="flex items-center gap-2 p-2 bg-white rounded-xl shadow-card text-left w-full hover:shadow-card-hover transition-shadow"
       >
         <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-green-100 to-green-200 flex items-center justify-center text-green-600 font-bold">
           {product.name.charAt(0).toUpperCase()}
@@ -65,6 +75,14 @@ export const ProductCard = ({ product, onFlyStart }: ProductCardProps) => {
         <div className="flex-1 min-w-0">
           <div className="text-sm font-semibold text-gray-900 truncate">{product.name}</div>
           <div className="text-base font-bold text-green-600">GHS {sellingPrice.toFixed(2)}</div>
+          {isExpiringSoon && (
+            <div className="text-[10px] text-red-600 font-bold">Expires soon!</div>
+          )}
+          {expiry && !isExpiringSoon && (
+            <div className="text-[10px] text-gray-400">
+              Exp: {new Date(expiry).toLocaleDateString()}
+            </div>
+          )}
         </div>
         {isOutOfStock && <span className="text-xs text-red-600 font-medium">Out</span>}
         {isLowStock && !isOutOfStock && <span className="text-xs text-red-600">{currentStock}</span>}
@@ -72,9 +90,8 @@ export const ProductCard = ({ product, onFlyStart }: ProductCardProps) => {
     );
   }
 
-  // For portrait or comfortable density: use reduced padding in landscape
   const cardPadding = (isLandscape && !isCompact) ? 'p-2' : (isCompact ? 'p-3' : 'p-3 md:p-4');
-  
+
   const cardClasses = `
     group relative flex flex-col ${cardPadding} bg-white rounded-2xl shadow-card transition-all text-left
     ${isOutOfStock ? 'opacity-60 grayscale cursor-not-allowed' : 'hover:shadow-card-hover cursor-pointer'}
@@ -101,6 +118,11 @@ export const ProductCard = ({ product, onFlyStart }: ProductCardProps) => {
             {currentStock}
           </span>
         )}
+        {isExpiringSoon && (
+          <span className="absolute top-2 right-2 bg-red-100 text-red-700 text-[10px] font-bold px-1.5 py-0.5 rounded-full">
+            Expires!
+          </span>
+        )}
         <span className="text-sm font-bold text-gray-900 break-words line-clamp-2 group-hover:text-green-600 transition-colors">
           {product.name || 'Unnamed'}
         </span>
@@ -108,8 +130,13 @@ export const ProductCard = ({ product, onFlyStart }: ProductCardProps) => {
           GHS {sellingPrice.toFixed(2)}
         </span>
         <span className={`text-xs mt-0.5 font-medium ${isOutOfStock ? 'text-red-600' : isLowStock ? 'text-red-600' : 'text-green-600'}`}>
-          {currentStock} left
+          {isOutOfStock ? 'Out of stock' : `${currentStock} left`}
         </span>
+        {expiry && !isExpiringSoon && (
+          <span className="text-[10px] text-gray-400 mt-0.5">
+            Exp: {new Date(expiry).toLocaleDateString()}
+          </span>
+        )}
       </motion.button>
     );
   }
@@ -141,6 +168,11 @@ export const ProductCard = ({ product, onFlyStart }: ProductCardProps) => {
           Low: {currentStock}
         </span>
       )}
+      {isExpiringSoon && (
+        <span className="absolute top-3 right-3 bg-red-100 text-red-700 text-xs font-bold px-2 py-1 rounded-full">
+          Expires soon!
+        </span>
+      )}
 
       <span className="text-sm md:text-base font-bold text-gray-900 break-words group-hover:text-green-600 transition-colors">
         {product.name || 'Unnamed Product'}
@@ -154,6 +186,11 @@ export const ProductCard = ({ product, onFlyStart }: ProductCardProps) => {
       <span className={`text-xs mt-1 font-medium ${isOutOfStock ? 'text-red-600' : isLowStock ? 'text-red-600' : 'text-green-600'}`}>
         {isOutOfStock ? 'Out of stock' : `${currentStock} in stock`}
       </span>
+      {expiry && !isExpiringSoon && (
+        <span className="text-xs text-gray-400 mt-0.5">
+          Exp: {new Date(expiry).toLocaleDateString()}
+        </span>
+      )}
     </motion.button>
   );
 };
