@@ -239,12 +239,12 @@ export default function Inventory() {
   };
 
   const refreshAfterOnline = () => {
-    if (navigator.onLine) {
-      syncProducts();
-      if (isOwner) {
-        syncMutations();
-      }
-    }
+    //if (navigator.onLine) {
+    //  syncProducts();
+    //  if (isOwner) {
+    //    syncMutations();
+    //  }
+    //}
   };
 
   const getSellThrough = (product: any) => {

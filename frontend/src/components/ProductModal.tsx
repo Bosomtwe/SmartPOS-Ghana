@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { useProductMutationStore } from '../stores/productMutationStore';
 import { useAuthStore } from '../stores/authStore';
 import { DEFAULT_EXPIRY_ALERT_DAYS } from '../constants';
-import { useProductStore } from '../stores/productStore';
+//import { useProductStore } from '../stores/productStore';
 
 interface ProductForm {
   name: string;
@@ -26,7 +26,7 @@ interface Props {
 
 export default function ProductModal({ product, onClose, onSuccess }: Props) {
   const { addMutation } = useProductMutationStore();
-  const { updateProductFromServer, syncProducts } = useProductStore();
+  //const { updateProductFromServer, syncProducts } = useProductStore();
   const { user } = useAuthStore();
   const isOwner = user?.role === 'OWNER';
 
@@ -189,12 +189,12 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
       }
 
       // ✅ Refresh the specific product from server to ensure UI reflects actual data
-      if (product) {
-        await updateProductFromServer(product.id);
-      } else {
+      //if (product) {
+      //  await updateProductFromServer(product.id);
+      //} else {
         // For new products, a full sync is needed to get the server-generated ID
-        await syncProducts();
-      }
+      //  await syncProducts();
+      //}
 
       onSuccess();
       onClose(); // ✅ Close modal after success 

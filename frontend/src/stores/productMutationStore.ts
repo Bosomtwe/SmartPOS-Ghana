@@ -136,7 +136,6 @@ export const useProductMutationStore = create<ProductMutationState>((set, get) =
           switch (mutation.type) {
             case 'CREATE': {
               const { id: tempId, ...productData } = mutation.data;
-              // ✅ Pass custom_fields as-is (already in snake_case)
               const apiPayload = {
                 ...productData,
                 custom_fields: productData.custom_fields || {},
@@ -153,7 +152,6 @@ export const useProductMutationStore = create<ProductMutationState>((set, get) =
               break;
             }
             case 'UPDATE': {
-              // ✅ Pass custom_fields as-is (already in snake_case)
               const apiPayload = {
                 ...mutation.data,
                 custom_fields: mutation.data.custom_fields || {},
@@ -173,15 +171,17 @@ export const useProductMutationStore = create<ProductMutationState>((set, get) =
           }
           await db.productMutations.update(mutation.id, { synced: true, syncError: null });
         } catch (err: any) {
-          const errorMsg = err.response?.data?.error || err.message || 'Sync failed';
-          await db.productMutations.update(mutation.id, { syncError: errorMsg });
-          console.error(`Mutation ${mutation.id} failed:`, errorMsg);
+          if (err.response?.status === 404) {
+            // The product no longer exists – consider the mutation resolved
+            await db.productMutations.update(mutation.id, { synced: true, syncError: null });
+          } else {
+            const errorMsg = err.response?.data?.error || err.message || 'Sync failed';
+            await db.productMutations.update(mutation.id, { syncError: errorMsg });
+            console.error(`Mutation ${mutation.id} failed:`, errorMsg);
+          }
         }
       }
-
-      if (navigator.onLine) {
-        await useProductStore.getState().syncProducts();
-      }
+      // ✅ REMOVED: automatic syncProducts() call that was overwriting optimistic updates
     } finally {
       await get().refreshPendingCount();
       set({ isSyncing: false });
