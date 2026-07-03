@@ -29,7 +29,8 @@ const toCamelCase = async (product: any): Promise<Product> => {
     isActive: product.is_active,
     shopId,
     customFields: product.custom_fields || {},
-    initialStock: product.custom_fields?.initial_stock ?? product.current_stock,
+    // ✅ FIXED: remove dangerous fallback to current_stock
+    initialStock: product.custom_fields?.initial_stock ?? undefined,
   };
 };
 
@@ -88,6 +89,8 @@ interface ProductState {
   adjustStockOptimistic: (id: string, delta: number, reason?: string) => void;
   updateProductAfterSync: (localId: string, serverProduct: any) => Promise<void>;
   clearProducts: () => void;
+  // ✅ NEW: refresh a single product from server
+  updateProductFromServer: (productId: string) => Promise<void>;
 }
 
 // 🔁 Fetch lock – prevents overlapping requests
@@ -263,4 +266,19 @@ export const useProductStore = create<ProductState>((set, get) => ({
   clearProducts: () => {
     set({ products: [], fullyLoaded: false });
   },
+ 
+  // ✅ NEW
+  updateProductFromServer: async (productId: string) => {
+    try {
+      const res = await api.get(`/products/${productId}/`);
+      const fresh = await toCamelCase(res.data);
+      set((state) => ({
+        products: state.products.map((p) => (p.id === productId ? fresh : p)),
+      }));
+      await db.products.put(fresh);
+    } catch (err) {
+      console.error('Failed to refresh product from server', err);
+    }
+  },
+
 }));

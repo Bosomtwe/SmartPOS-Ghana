@@ -53,8 +53,8 @@ class ProductListCreateView(generics.ListCreateAPIView):
         if not shop:
             raise PermissionError("User has no associated shop")
         instance = serializer.save(shop=shop)
-        # Set initial stock if not provided
-        if not instance.custom_fields.get('initial_stock'):
+        # ✅ FIX: use 'not in' to avoid falsy 0 overwrite
+        if 'initial_stock' not in instance.custom_fields:
             instance.custom_fields['initial_stock'] = instance.current_stock
             instance.save(update_fields=['custom_fields'])
         cache.delete(f'product_list_{shop.id}')

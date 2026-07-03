@@ -28,6 +28,10 @@ const toCamelCaseMutationData = (data: any): Partial<Product> => {
   if (data.low_stock_threshold !== undefined) result.lowStockThreshold = data.low_stock_threshold;
   if (data.is_active !== undefined) result.isActive = data.is_active;
   if (data.custom_fields !== undefined) result.customFields = data.custom_fields;
+  // ✅ Offline accuracy: also extract initialStock from custom_fields
+  if (data.custom_fields?.initial_stock !== undefined) {
+    result.initialStock = data.custom_fields.initial_stock;
+  }
   return result;
 };
 
@@ -57,6 +61,7 @@ const applyMutationToLocalStore = (mutation: Omit<ProductMutation, 'id' | 'creat
       isActive: camelData.isActive ?? true,
       shopId: shopId,
       customFields: camelData.customFields || {},
+      initialStock: camelData.initialStock ?? camelData.currentStock ?? 0,
     };
     productStore.addProductOptimistic(newProduct);
   }

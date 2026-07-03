@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import { useProductMutationStore } from '../stores/productMutationStore';
 import { useAuthStore } from '../stores/authStore';
 import { DEFAULT_EXPIRY_ALERT_DAYS } from '../constants';
+import { useProductStore } from '../stores/productStore';
 
 interface ProductForm {
   name: string;
@@ -25,6 +26,7 @@ interface Props {
 
 export default function ProductModal({ product, onClose, onSuccess }: Props) {
   const { addMutation } = useProductMutationStore();
+  const { updateProductFromServer, syncProducts } = useProductStore();
   const { user } = useAuthStore();
   const isOwner = user?.role === 'OWNER';
 
@@ -43,9 +45,13 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // ✅ Track whether the user has explicitly set initial stock
+  const [hasSetInitialStock, setHasSetInitialStock] = useState(false);
+
   useEffect(() => {
     if (product) {
       const customFields = product.customFields || {};
+      const existingInitial = customFields.initial_stock; // ← define before using
       setForm({
         name: product.name || '',
         sku: product.sku || '',
@@ -54,10 +60,20 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
         current_stock: product.currentStock ?? 0,
         low_stock_threshold: product.lowStockThreshold ?? 5,
         customFields,
-        initialStock: customFields.initial_stock ?? product.currentStock ?? 0,
+        // Use the actual initial stock if set, else default to 0 (will be replaced on create)
+        initialStock: existingInitial ?? 0,
         is_restricted: product.isRestricted || false,
         secret_code: product.secretCode || '',
       });
+      // If product already has an initial_stock, mark it as set
+      if (existingInitial !== undefined) {
+        setHasSetInitialStock(true);
+      } else {
+        setHasSetInitialStock(false);
+      }
+    } else {
+      // New product: reset flag
+      setHasSetInitialStock(false);
     }
   }, [product]);
 
@@ -80,8 +96,9 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
     });
   };
 
-  // ✅ Handle initial stock input (allows deleting zero)
+  // ✅ Handle initial stock input (allows deleting zero) ✅ Updated: also marks the field as touched
   const handleInitialStockChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setHasSetInitialStock(true); // user intentionally edited the field
     const raw = e.target.value;
     if (raw === '') {
       setForm({
@@ -136,6 +153,11 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
     setLoading(true);
     setError('');
 
+    // ✅ Compute initial stock: if left empty, use current stock (for new products)
+    const initialStockValue = hasSetInitialStock
+      ? Number(form.initialStock) 
+      : Number(form.current_stock);
+
     const data = {
       name: form.name.trim(),
       sku: form.sku.trim() || null,
@@ -145,7 +167,8 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
       low_stock_threshold: Number(form.low_stock_threshold),
       custom_fields: {
         ...form.customFields,
-        initial_stock: Number(form.initialStock) || 0,
+        //initial_stock: Number(form.initialStock) || 0,
+        initial_stock: initialStockValue,
       },
       is_restricted: form.is_restricted,
       secret_code: form.secret_code?.trim() || null,
@@ -164,7 +187,17 @@ export default function ProductModal({ product, onClose, onSuccess }: Props) {
           data: { ...data, id: crypto.randomUUID() },
         });
       }
+
+      // ✅ Refresh the specific product from server to ensure UI reflects actual data
+      if (product) {
+        await updateProductFromServer(product.id);
+      } else {
+        // For new products, a full sync is needed to get the server-generated ID
+        await syncProducts();
+      }
+
       onSuccess();
+      onClose(); // ✅ Close modal after success 
     } catch (err: any) {
       let errorMessage = 'An error occurred';
       if (err.response?.data?.error) errorMessage = err.response.data.error;
