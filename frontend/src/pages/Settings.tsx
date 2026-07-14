@@ -76,6 +76,7 @@ export default function Settings() {
 
   // ==================== FETCH ALL SHOPS (superuser only) ====================
   const fetchAllShops = async () => {
+    // 🔧 NEW: Double‑check that user is actually superuser
     if (!user?.is_superuser) return;
     if (!navigator.onLine) {
       console.log('[Settings] Offline – skipping shops fetch');
@@ -85,18 +86,25 @@ export default function Settings() {
     try {
       const res = await api.get('/admin/shops/');
       setAllShops(res.data);
-    } catch (err) {
-      addToast({ message: 'Failed to load shops', type: 'error' });
+    } catch (err: any) {
+      // 🔧 NEW: If the request fails with 403, just ignore silently – the user isn't a superuser
+      if (err.response?.status === 403) {
+        console.log('[Settings] User is not a superuser – skipping admin shops');
+      } else {
+        addToast({ message: 'Failed to load shops', type: 'error' });
+      }
     } finally {
       setLoadingShops(false);
     }
   };
 
+  // 🔧 NEW: Effect now runs only when we have a user object and that user is superuser
   useEffect(() => {
-    if (user?.is_superuser) {
+    if (user && user?.is_superuser) {
       fetchAllShops();
     }
-  }, [user]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, user?.is_superuser]);
 
   // ==================== TOGGLE SHOP ACTIVE (superuser only) ====================
   const toggleShopActive = async (shopId: string, currentActive: boolean) => {
@@ -151,6 +159,7 @@ export default function Settings() {
       return;
     }
     if (user?.role !== 'OWNER') return;
+    if (!shop?.id) return;
     try {
       const params = new URLSearchParams({
         page: cashierPage.toString(),
@@ -165,7 +174,12 @@ export default function Settings() {
     } catch (err) {
       console.error('Failed to load cashiers', err);
     }
-  }, [user?.role, cashierPage, cashierPageSize, cashierSearch]);
+    // IMPORTANT: shop?.id must be a dependency. Without it, switching
+    // branches (role stays 'OWNER', so nothing else here changes) never
+    // produces a new function reference, so the effect below never
+    // re-fires — "Manage Cashiers" kept showing the PREVIOUS branch's
+    // cashier list until the owner happened to search or change page.
+  }, [user?.role, shop?.id, cashierPage, cashierPageSize, cashierSearch]);
 
   useEffect(() => {
     fetchCashiers();
@@ -174,6 +188,15 @@ export default function Settings() {
   useEffect(() => {
     setCashierPage(1);
   }, [cashierSearch]);
+
+  // Reset pagination and clear the stale list immediately on shop switch —
+  // avoids briefly showing the previous branch's cashiers while the fetch
+  // triggered by fetchCashiers' updated dependency above is still in flight.
+  useEffect(() => {
+    setCashiers([]);
+    setCashierTotal(0);
+    setCashierPage(1);
+  }, [shop?.id]);
 
   // ==================== PASSWORD RESET ====================
   const handleResetPassword = async (cashierId: string) => {

@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../stores/authStore';
 import { Button } from '../components/Button';
@@ -6,9 +6,17 @@ import { Button } from '../components/Button';
 export default function Logout() {
   const navigate = useNavigate();
   const logout = useAuthStore((state) => state.logout);
+  // authStore.logout() is already reentrant-safe, but guard here too so the
+  // effect only ever kicks off one logout per mount (StrictMode double-
+  // invokes effects in dev, and this avoids relying solely on the store's
+  // internal guard).
+  const hasLoggedOutRef = useRef(false);
 
   useEffect(() => {
-    logout();
+    if (!hasLoggedOutRef.current) {
+      hasLoggedOutRef.current = true;
+      logout();
+    }
     const timer = setTimeout(() => navigate('/login'), 3000);
     return () => clearTimeout(timer);
   }, [logout, navigate]);

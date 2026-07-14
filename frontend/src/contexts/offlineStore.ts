@@ -1,3 +1,4 @@
+//contexts/offlinestore
 import { create } from 'zustand';
 import { db } from '../lib/dexie';
 import type { Sale } from '../lib/dexie';

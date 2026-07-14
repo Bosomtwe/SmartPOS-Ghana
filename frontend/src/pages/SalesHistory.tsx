@@ -19,35 +19,23 @@ import type { Sale } from '../lib/dexie';
 
 const formatCurrency = (amount: number) => `GHS ${amount.toFixed(2)}`;
 
-//New offline userfilter
-const CASHIERS_CACHE_KEY = 'cashiers_cache';
+// NOTE: cashier list caching now lives entirely in services/offlineUsers.ts
+// (getCashierList), which scopes its cache by shop id. A second, unscoped
+// localStorage cache used to live here ('cashiers_cache') — it was a real
+// bug: switching shops/accounts could show a *different* shop's cashiers
+// in this page's "filter by user" dropdown, since that cache was never
+// cleared or shop-scoped. Removed in favor of the single, shop-scoped
+// implementation so there's one cache to reason about, not two.
 
-function getCachedCashiers(): { id: string; phone: string }[] {
-  try {
-    const raw = localStorage.getItem(CASHIERS_CACHE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-    }
-  }
-
-  function setCachedCashiers(cashiers: { id: string; phone: string }[]) {
-    try {
-      localStorage.setItem(CASHIERS_CACHE_KEY, JSON.stringify(cashiers));
-    } catch {
-      // localStorage full – ignore
-    }
-  }
-
-  function addOwnerToList(
-    list: { id: string; phone: string }[],
-    owner: { id: string; phone: string } | null
-  ): { id: string; phone: string }[] {
-    if (!owner?.id || !owner?.phone) return list;
-    // avoid duplicates
-    if (list.some(u => u.id === owner.id)) return list;
-    return [{ id: owner.id, phone: owner.phone }, ...list];
-  }
+function addOwnerToList(
+  list: { id: string; phone: string }[],
+  owner: { id: string; phone: string } | null
+): { id: string; phone: string }[] {
+  if (!owner?.id || !owner?.phone) return list;
+  // avoid duplicates
+  if (list.some(u => u.id === owner.id)) return list;
+  return [{ id: owner.id, phone: owner.phone }, ...list];
+}
 
 
 export default function SalesHistory() {
@@ -76,39 +64,19 @@ export default function SalesHistory() {
     fetchCustomers();
   }, [fetchProducts, fetchCustomers]);
 
-  // Fetch cashiers AND add owner if owner role (online / cached offline)
-  /*
-  useEffect(() => {
-    if (user?.role === 'OWNER') {
-      getCashierList().then(setUsers).catch(console.error);
-    }
-  }, [user]);*/
-
-  //New Offline userfilter
+  // Fetch cashiers AND add owner if owner role. getCashierList() already
+  // handles the online (fetch + cache) and offline (read cache) paths and
+  // scopes its cache to the current shop, so this page just needs to call
+  // it and merge in the owner.
   useEffect(() => {
     if (user?.role !== 'OWNER') return;
 
-    const loadUsers = async () => {
-      if (navigator.onLine) {
-        try {
-          const cashiers = await getCashierList(); // fetch from server
-          const combined = addOwnerToList(cashiers, user);
-          setUsers(combined);
-          // Cache the fresh list for offline use
-          setCachedCashiers(combined); // cache includes owner
-        } catch (err) {
-          console.warn('Failed to fetch cashiers, using cache', err);
-          const cached = getCachedCashiers();
-          setUsers(addOwnerToList(cached, user));
-        }
-      } else {
-        // Offline – load from cache + always add the current owner
-        const cached = getCachedCashiers();
-        setUsers(addOwnerToList(cached, user));
-      }
-    };
-
-    loadUsers();
+    getCashierList()
+      .then(cashiers => setUsers(addOwnerToList(cashiers, user)))
+      .catch(err => {
+        console.warn('[SalesHistory] Failed to load cashiers', err);
+        setUsers(addOwnerToList([], user));
+      });
   }, [user]);
 
   // Determine effective userId for API calls

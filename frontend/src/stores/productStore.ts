@@ -4,13 +4,16 @@ import { db, type Product } from '../lib/dexie';
 import api from '../services/api';
 import { useAuthStore } from './authStore';
 
+// IMPORTANT: no fallback to a cached IndexedDB record's shopId here — see
+// the detailed explanation in saleStore.ts's getShopId. That fallback can
+// resolve to a PREVIOUS session's shop during the gap between logout and
+// the next login completing, since logout preserves cached data.
 const getShopId = async (): Promise<string | null> => {
   const shop = useAuthStore.getState().shop;
   if (shop?.id) return shop.id;
   const stored = localStorage.getItem('shopId');
   if (stored) return stored;
-  const anyProduct = await db.products.limit(1).first();
-  return anyProduct?.shopId || null;
+  return null;
 };
 
 const toCamelCase = async (product: any): Promise<Product> => {
@@ -103,6 +106,14 @@ export const useProductStore = create<ProductState>((set, get) => ({
   error: null,
 
   fetchProducts: async () => {
+    // Capture the shop ID at the very start
+    const shopIdAtStart = await getShopId();
+    if (!shopIdAtStart) {
+      console.error('[productStore] No shopId');
+      set({ loading: false, products: [], fullyLoaded: true });
+      return;
+    }
+
     // ✅ Log if a duplicate fetch is skipped
     if (productFetchPromise) {
       console.log('[productStore] Skipping duplicate fetch – one already in progress');
@@ -154,6 +165,14 @@ export const useProductStore = create<ProductState>((set, get) => ({
         try {
           console.log('[productStore] Fetching fresh products from server...');
           const rawProducts = await fetchAllPages('/products/');
+
+          // 🔧 OPTIMIZATION: Discard response if shop changed while we were waiting
+          const currentShopId = await getShopId();
+          if (currentShopId !== shopIdAtStart) {
+            console.log('[productStore] Shop changed – discarding stale response');
+            return;
+          }
+
           const freshProducts = await Promise.all(rawProducts.map(toCamelCase));
           console.log(`[productStore] Synced ${freshProducts.length} products from server`);
 
@@ -265,6 +284,11 @@ export const useProductStore = create<ProductState>((set, get) => ({
 
   clearProducts: () => {
     set({ products: [], fullyLoaded: false });
+  },
+
+  // 🔧 NEW: Reset the fetch lock so the next shop's fetch can start immediately
+  __resetLock: () => {
+    productFetchPromise = null;
   },
  
   // ✅ NEW

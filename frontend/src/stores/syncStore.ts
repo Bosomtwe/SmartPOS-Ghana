@@ -7,6 +7,7 @@ import { useCustomerStore } from './customerStore';
 import { useProductStore } from './productStore';
 import { useProductMutationStore } from './productMutationStore';
 import { useSalesStore, toCamelSale } from './saleStore';
+import { useAuthStore } from './authStore';
 
 const BATCH_SIZE = 100;
 const RETRY_COOLDOWN_MS = 10000;
@@ -116,6 +117,23 @@ export const useSyncStore = create<SyncState>((set, get) => ({
       return;
     }
 
+    // Don't sync when nobody is logged in (e.g. an 'online' event fires
+    // right after logout, before the next login has completed).
+    const authAtStart = useAuthStore.getState();
+    if (!authAtStart.token || !authAtStart.shop?.id) {
+      console.log('[sync] No authenticated session – skipping sync');
+      return;
+    }
+    const sessionKeyAtStart = `${authAtStart.user?.id || ''}:${authAtStart.shop.id}`;
+
+    // Bails out of applying any further results if the logged-in user/shop
+    // changed while this sync was awaiting a network/DB call. Without this,
+    // a sync started under one account can finish writing sales/products/
+    // customer balances into the stores AFTER a different account has
+    // logged in, silently mixing data between sessions.
+    const sessionChanged = () =>
+      `${useAuthStore.getState().user?.id || ''}:${useAuthStore.getState().shop?.id || ''}` !== sessionKeyAtStart;
+
     if (get().isSyncing) {
       console.log('[sync] Already syncing – skipping');
       return;
@@ -215,6 +233,13 @@ export const useSyncStore = create<SyncState>((set, get) => ({
 
         console.log(`[sync] Sending batch ${Math.floor(i / BATCH_SIZE) + 1} (${payloadArray.length} sales)`);
         const response = await api.post('/sales/sync/', payloadArray);
+
+        if (sessionChanged()) {
+          console.warn('[sync] Session changed mid-sync – aborting before applying results to avoid cross-account data mixing');
+          set({ isSyncing: false });
+          return;
+        }
+
         const results: any[] = response.data.results || [];
 
         for (const result of results) {
@@ -324,11 +349,22 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         }
       }
 
+      if (sessionChanged()) {
+        console.warn('[sync] Session changed mid-sync – skipping trailing product/customer/mutation resync');
+        set({ isSyncing: false });
+        return;
+      }
+
       try {
         await useProductStore.getState().syncProducts();
         console.log('[sync] Synced products after sale sync');
       } catch (e) {
         console.error('Failed to sync products after sale sync', e);
+      }
+
+      if (sessionChanged()) {
+        set({ isSyncing: false });
+        return;
       }
 
       try {
@@ -338,11 +374,22 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         console.error('Failed to refresh customer balances', e);
       }
 
+      if (sessionChanged()) {
+        set({ isSyncing: false });
+        return;
+      }
+
       try {
         await useProductMutationStore.getState().syncMutations();
         console.log('[sync] Synced product mutations');
       } catch (e) {
         console.error('Failed to sync product mutations after sale sync', e);
+      }
+
+      if (sessionChanged()) {
+        console.warn('[sync] Session changed mid-sync – discarding final pending count update');
+        set({ isSyncing: false });
+        return;
       }
 
       const finalSales = await db.sales.toArray();

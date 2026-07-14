@@ -1,6 +1,7 @@
 // src/stores/inventoryStore.ts
 import { create } from 'zustand';
 import api from '../services/api';
+import { useAuthStore } from './authStore';   // 🔧 ADDED: needed for getShopId
 
 interface Product {
   id: string;
@@ -25,6 +26,13 @@ interface InventoryState {
   clearProducts: () => void;   // ✅ MUST be here
 }
 
+// 🔧 ADDED: Helper to get current shop ID
+const getShopId = (): string | null => {
+  const shop = useAuthStore.getState().shop;
+  if (shop?.id) return shop.id;
+  return localStorage.getItem('shopId');
+};
+
 const extractList = (data: any): any[] => {
   if (Array.isArray(data)) return data;
   if (data && Array.isArray(data.results)) return data.results;
@@ -38,9 +46,24 @@ export const useInventoryStore = create<InventoryState>((set) => ({
   error: null,
 
   fetchProducts: async () => {
+    // Capture the shop ID at the start
+    const shopIdAtStart = getShopId();
+    if (!shopIdAtStart) {
+      console.error('[inventoryStore] No shopId');
+      return;
+    }
+
     set({ loading: true, error: null });
     try {
       const res = await api.get('/products/');
+
+      // 🔧 OPTIMIZATION: Discard response if the user switched shops while waiting
+      const currentShopId = getShopId();
+      if (currentShopId !== shopIdAtStart) {
+        console.log('[inventoryStore] Shop changed – discarding stale response');
+        return;
+      }
+
       set({ products: extractList(res.data), loading: false });
     } catch (err: any) {
       set({

@@ -7,6 +7,8 @@ import { useSalesStore } from './saleStore';
 import { useProductStore } from './productStore';
 import { useCustomerStore } from './customerStore';
 import { useInventoryStore } from './inventoryStore';
+import { clearAllCashierListCaches } from '../services/offlineUsers';
+import { useCartStore } from './cartStore';
 
 interface User {
   id: string;
@@ -32,6 +34,7 @@ interface AuthState {
   shops: Shop[];                    // list of owned shops
   login: (phone: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  _doLogout: () => Promise<void>;
   setAuth: (token: string, refreshToken: string, user: User, shop: Shop) => Promise<void>;
   setAccessToken: (token: string) => void;
   fetchShops: () => Promise<void>;
@@ -46,6 +49,12 @@ interface AuthState {
 const setLastActiveShop = (shopId: string) => {
   localStorage.setItem('lastActiveShopId', shopId);
 };
+
+// Guards against logout() being invoked twice concurrently (e.g. React
+// effect double-invocation in StrictMode, or a double click). Without
+// this, two overlapping logout() calls can race on the IndexedDB clears
+// and leave things in an inconsistent state right before a new login.
+let logoutInProgress = false;
 
 export const useAuthStore = create<AuthState>()(
   persist(
@@ -93,6 +102,17 @@ export const useAuthStore = create<AuthState>()(
           await db.customers.clear();
           await db.sales.clear();
           await db.creditTransactions.clear();
+          // Subscription status is per-shop and gates access to the app
+          // (see the subscription check above/in switchShop) — a stale
+          // cached subscription from the previous shop must not leak into
+          // this one, in either direction (falsely "active" or falsely
+          // "expired").
+          await db.currentSubscription.clear();
+          // Cashier list is also per-shop (used in Dashboard/SalesHistory
+          // "filter by user" dropdowns). getCashierList() already scopes
+          // its cache by shop id, but clear everything here too as
+          // defense in depth.
+          clearAllCashierListCaches();
           console.log('[authStore] Cleared data from previous shop', previousShopId);
         }
 
@@ -102,6 +122,15 @@ export const useAuthStore = create<AuthState>()(
         }
 
         useSalesStore.getState().clearSales();
+        useProductStore.getState().clearProducts();
+        useCustomerStore.getState().clearCustomers();
+        // Cart items hold denormalized product data (price/stock) captured
+        // at add-time. cartStore is persisted to localStorage but was never
+        // cleared on login/logout/switchShop — a cart left over from a
+        // previous session (interrupted checkout, or a different account
+        // on a shared device) could otherwise be checked out against the
+        // WRONG shop's pricing/stock after this login.
+        useCartStore.getState().clearCart();
 
         // Always keep these IDs in sync
         localStorage.setItem('shopId', shop.id);
@@ -114,19 +143,46 @@ export const useAuthStore = create<AuthState>()(
       },
 
       logout: async () => {
-        // ✅ Keep sales for offline use – do NOT clear them here
-        await db.products.clear();
-        await db.customers.clear();
-        // await db.sales.clear();            // removed to preserve offline data
-        await db.creditTransactions.clear();
+        if (logoutInProgress) {
+          console.log('[authStore] logout already in progress – skipping duplicate call');
+          return;
+        }
+        logoutInProgress = true;
+        try {
+          await get()._doLogout();
+        } finally {
+          logoutInProgress = false;
+        }
+      },
+
+      // Internal implementation, only ever called through the logout() guard above.
+      _doLogout: async () => {
+        // ✅ Keep products/customers/creditTransactions/sales for offline
+        // use – do NOT clear any of them here. A same-shop relogin
+        // (including the common offline case: logout, then log back into
+        // the same shop while offline) must be able to use this cache.
+        // Cross-shop cache invalidation is already handled correctly in
+        // login(), which clears these tables when it detects the new
+        // shop.id differs from the persisted lastActiveShopId. Clearing
+        // them again here — even scoped to "this" shop — would just
+        // recreate the bug: it wipes the exact cache a same-shop relogin
+        // needs.
         await db.productMutations.clear();
         useSalesStore.getState().clearSales();   // only clears in‑memory store
         useInventoryStore.getState().clearProducts();   // ✅ optional but consistent
+        useProductStore.getState().clearProducts();     // ✅ Clear in‑memory stores
+        useCustomerStore.getState().clearCustomers();   // ✅ Clear in‑memory stores
+        // Unlike sales/products/customers, an in-progress cart isn't
+        // offline cache worth preserving across a logout — always clear it.
+        useCartStore.getState().clearCart();
 
         // Clear auth-related flags, but KEEP lastActiveShopId
         localStorage.removeItem('shopId');
         localStorage.removeItem('auth-storage');
         //localStorage.removeItem('lastActiveShopId');   // ← add this
+
+        // 🔒 Signal to Login page: never auto‑resume after a manual logout
+        sessionStorage.setItem('manualLogout', 'true');
 
         useAuthStore.persist.clearStorage();
 
@@ -144,6 +200,7 @@ export const useAuthStore = create<AuthState>()(
           await db.productMutations.clear();
         }
         useSalesStore.getState().clearSales();
+        useCartStore.getState().clearCart();
         set({ token, refreshToken, user, shop });
         api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
         console.log('[authStore] setAuth, shopId saved:', shop.id);
@@ -166,7 +223,7 @@ export const useAuthStore = create<AuthState>()(
       },
 
       switchShop: async (shopId: string) => {
-        const { shops, user, refreshToken } = get();
+        const { shops, user, refreshToken, shop: oldShop } = get();
         const targetShop = shops.find(s => s.id === shopId);
         if (!targetShop) throw new Error('Shop not found');
         if (user?.role !== 'OWNER') throw new Error('Only owners can switch shops');
@@ -176,46 +233,95 @@ export const useAuthStore = create<AuthState>()(
         useCustomerStore.getState().clearCustomers();
         useSalesStore.getState().clearSales();
         useInventoryStore.getState().clearProducts();   // ← add this
+        useCartStore.getState().clearCart();   // cart pricing/stock is shop-specific
 
-        const response = await api.post('/shops/switch/', { shop_id: shopId });
-        const { user: updatedUser, shop: updatedShop, access } = response.data;
-
-        // ✅ Update token if server returns one; otherwise refresh manually
-        if (access) {
-          set({ token: access });
-          api.defaults.headers.common['Authorization'] = `Bearer ${access}`;
-        } else if (refreshToken) {
-          try {
-            const refreshResponse = await api.post('/auth/refresh/', { refresh: refreshToken });
-            const newAccess = refreshResponse.data.access;
-            set({ token: newAccess });
-            api.defaults.headers.common['Authorization'] = `Bearer ${newAccess}`;
-          } catch (e) {
-            console.warn('[switchShop] Token refresh failed, continuing with current token');
+        // 🔧 NEW: Wrap the switch logic in try/catch to handle failures
+        try {
+          const response = await api.post('/shops/switch/', { shop_id: shopId });
+          const { user: updatedUser, shop: updatedShop, access } = response.data;
+          
+          // ✅ Update token if server returns one; otherwise refresh manually
+          if (access) {
+            set({ token: access });
+            api.defaults.headers.common['Authorization'] = `Bearer ${access}`;
+          } else if (refreshToken) {
+            try {
+              const refreshResponse = await api.post('/auth/refresh/', { refresh: refreshToken });
+              const newAccess = refreshResponse.data.access;
+              set({ token: newAccess });
+              api.defaults.headers.common['Authorization'] = `Bearer ${newAccess}`;
+            } catch (e) {
+              console.warn('[switchShop] Token refresh failed, continuing with current token');
+            }
           }
+
+          // Clear IndexedDB of old shop data
+          await db.products.clear();
+          await db.customers.clear();
+          await db.sales.clear();
+          await db.creditTransactions.clear();
+          // Same reasoning as in login(): subscription status and the
+          // cashier list are per-shop and must not leak across a switch.
+          await db.currentSubscription.clear();
+          clearAllCashierListCaches();
+
+          // Set the new shop – re‑renders happen with empty local DB and correct token
+          set({ user: updatedUser, shop: updatedShop });
+          localStorage.setItem('shopId', updatedShop.id);
+          setLastActiveShop(updatedShop.id);
+          console.log('[authStore] Active shopId is now:', updatedShop.id);   // ✅ LOG
+          console.log('[authStore] Switched to shop:', updatedShop.name);
+
+          // 🔧 OPTIMIZATION: Reset fetch locks so the next shop's fetches can start immediately
+          // Without this, the old shop's fetch lock would block the new shop's first request.
+          console.log('[switchShop] Resetting fetch locks...');
+          (useProductStore.getState() as any).__resetLock?.();
+          (useCustomerStore.getState() as any).__resetLock?.();  // not strictly needed (no lock), but safe
+          (useSalesStore.getState() as any).__resetLock?.();
+
+          // Load fresh data for the new shop
+          await Promise.all([
+            useProductStore.getState().fetchProducts(),
+            useCustomerStore.getState().fetchCustomers(),
+            useSalesStore.getState().fetchSales(),
+          ]);
+
+          // ✅ NEW: redirect to /subscription if the new shop has no active subscription
+          if (!updatedUser.is_superuser) {
+            try {
+              const subRes = await api.get('/subscriptions/current/');
+              const sub = subRes.data;
+              if (!sub || !sub.is_active) {
+                window.location.href = '/subscription';
+                return;
+              }
+            } catch {
+              window.location.href = '/subscription';
+              return;
+            }
+          }
+
+          await get().fetchShops();
+
+        } catch (error) {
+          // ❌ Switch failed – revert to the previous shop so the UI stays consistent
+          console.error('[switchShop] Failed, reverting to previous shop', error);
+
+          // Restore the previous shop's ID and user object
+          set({ user, shop: oldShop });
+          localStorage.setItem('shopId', oldShop?.id || '');
+          setLastActiveShop(oldShop?.id || '');
+
+          // Re‑fetch the old shop’s data to repopulate the UI
+          await Promise.all([
+            useProductStore.getState().fetchProducts(),
+            useCustomerStore.getState().fetchCustomers(),
+            useSalesStore.getState().fetchSales(),
+          ]);
+
+          // Re‑throw so the UI can show an error toast if desired
+          throw new Error('Shop switch failed. Please try again.');
         }
-
-        // Clear IndexedDB of old shop data
-        await db.products.clear();
-        await db.customers.clear();
-        await db.sales.clear();
-        await db.creditTransactions.clear();
-
-        // Set the new shop – re‑renders happen with empty local DB and correct token
-        set({ user: updatedUser, shop: updatedShop });
-        localStorage.setItem('shopId', updatedShop.id);
-        setLastActiveShop(updatedShop.id);
-        console.log('[authStore] Active shopId is now:', updatedShop.id);   // ✅ LOG
-        console.log('[authStore] Switched to shop:', updatedShop.name);
-
-        // Load fresh data for the new shop
-        await Promise.all([
-          useProductStore.getState().fetchProducts(),
-          useCustomerStore.getState().fetchCustomers(),
-          useSalesStore.getState().fetchSales(),
-        ]);
-
-        await get().fetchShops();
       },
 
       createShop: async (name: string, address?: string) => {
@@ -228,6 +334,24 @@ export const useAuthStore = create<AuthState>()(
         return newShop;
       },
     }),
-    { name: 'auth-storage' }
+    
+    { 
+      name: 'auth-storage',
+      // 🔧 NEW: Only persist essential state to avoid stale data
+      partialize: (state) => ({
+        token: state.token,
+        refreshToken: state.refreshToken,
+        user: state.user ? {
+          id: state.user.id,
+          phone: state.user.phone,
+          email: state.user.email,
+          role: state.user.role,
+          is_superuser: state.user.is_superuser,
+          shop_id: state.user.shop_id,
+        } : null,
+        shop: state.shop,
+        shops: state.shops,
+      }),
+    }
   )
 );

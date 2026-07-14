@@ -5,8 +5,8 @@ import { Button } from './Button';
 import { useAuthStore } from '../stores/authStore';
 import { useCustomerStore } from '../stores/customerStore';
 import { useProductStore } from '../stores/productStore';
+import { getCashierList } from '../services/offlineUsers';
 import type { Sale } from '../lib/dexie';
-import api from '../services/api';
 
 interface ReceiptModalProps {
   isOpen: boolean;
@@ -22,62 +22,16 @@ interface EnrichedItem {
   name: string;
 }
 
-//New Version
-const CASHIERS_CACHE_KEY = 'cashiers_cache';
-
-function getCachedCashiers(): { id: string; phone: string }[] {
-  try {
-    const raw = localStorage.getItem(CASHIERS_CACHE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-function setCachedCashiers(cashiers: { id: string; phone: string }[]) {
-  try {
-    localStorage.setItem(CASHIERS_CACHE_KEY, JSON.stringify(cashiers));
-  } catch {
-    // localStorage full – ignore
-  }
-}
-
 // ✅ Cache for user phone lookups
 const userPhoneCache = new Map<string, string>();
 
-/*
-Old Version
-async function getCashierPhone(userId: string): Promise<string> {
-  // Check cache
-  if (userPhoneCache.has(userId)) {
-    return userPhoneCache.get(userId)!;
-  }
-
-  // Check current user
-  const currentUser = useAuthStore.getState().user;
-  if (currentUser && currentUser.id === userId && currentUser.phone) {
-    userPhoneCache.set(userId, currentUser.phone);
-    return currentUser.phone;
-  }
-
-  // Fetch from API – try cashiers list first
-  try {
-    const res = await api.get('/users/cashiers/');
-    const cashiers = res.data.results || [];
-    const found = cashiers.find((u: any) => u.id === userId);
-    if (found && found.phone) {
-      userPhoneCache.set(userId, found.phone);
-      return found.phone;
-    }
-  } catch (err) {
-    console.warn('[ReceiptModal] Failed to fetch cashier phone', err);
-  }
-
-  // Fallback: return "Staff" with user ID
-  return `Staff (${userId.slice(0, 8)})`;
-}*/
-
-//New version
+// NOTE: this used to maintain its own 'cashiers_cache' localStorage entry,
+// completely independent of (and with the same key as) the one that used
+// to live in SalesHistory.tsx. Neither was scoped by shop, so after
+// switching shops/accounts this could resolve to a PREVIOUS shop's
+// cashier's phone number on a printed receipt. getCashierList() (from
+// services/offlineUsers) is the single, shop-scoped source of truth for
+// this data now — same fix already applied to SalesHistory.tsx.
 async function getCashierPhone(userId: string): Promise<string> {
   // 1. In‑memory cache
   if (userPhoneCache.has(userId)) {
@@ -91,35 +45,20 @@ async function getCashierPhone(userId: string): Promise<string> {
     return currentUser.phone;
   }
 
-  // 3. Offline – check localStorage cache
-  if (!navigator.onLine) {
-    const cachedCashiers = getCachedCashiers();
-    const found = cachedCashiers.find(c => c.id === userId);
-    if (found) {
-      userPhoneCache.set(userId, found.phone);
-      return found.phone;
-    }
-    return `Staff (${userId.slice(0, 8)})`;
-  }
-
-  // 4. Online – fetch from server and update localStorage cache
+  // 3. Shop-scoped cashier list — handles both online (fetch + cache) and
+  //    offline (read cache) paths internally.
   try {
-    const res = await api.get('/users/cashiers/');
-    const cashiers = res.data.results || [];
-
-    // Update the persistent cache
-    setCachedCashiers(cashiers.map((c: any) => ({ id: c.id, phone: c.phone })));
-
-    const found = cashiers.find((u: any) => u.id === userId);
+    const cashiers = await getCashierList();
+    const found = cashiers.find(c => c.id === userId);
     if (found && found.phone) {
       userPhoneCache.set(userId, found.phone);
       return found.phone;
     }
   } catch (err) {
-    console.warn('[ReceiptModal] Failed to fetch cashier phone', err);
+    console.warn('[ReceiptModal] Failed to resolve cashier phone', err);
   }
 
-  // 5. Ultimate fallback
+  // 4. Ultimate fallback
   return `Staff (${userId.slice(0, 8)})`;
 }
 

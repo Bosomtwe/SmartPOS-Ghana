@@ -567,6 +567,8 @@ export default function Inventory() {
           onClose={() => setShowImportModal(false)}
           onSuccess={() => {
             setShowImportModal(false);
+            // ✅ After a bulk import, we must fetch the updated list from the server
+            syncProducts();
             refreshAfterOnline();
           }}
         />

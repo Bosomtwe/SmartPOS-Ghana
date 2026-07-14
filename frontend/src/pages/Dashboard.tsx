@@ -122,7 +122,7 @@ const CashierDropdown = ({
 };
 
 export default function Dashboard() {
-  const { user } = useAuthStore();
+  const { user, shop } = useAuthStore();
   const { products, fetchProducts } = useProductStore();
   const { sales, fetchSales } = useSalesStore();
   const { pendingSales, isSyncing } = useSyncStore();
@@ -147,8 +147,33 @@ export default function Dashboard() {
   const prevPendingSales = useRef<number>(0);
   const refreshTimeoutRef = useRef<number | null>(null);
 
-  // Ref to hold the latest local transaction count for stale-check
-  const localTxnCountRef = useRef<number>(0);
+  // Identifies the current logged-in session (user + shop). Used to detect
+  // account switches so we never compare a fresh server count against a
+  // stale local count left over from a previous user/shop.
+  const sessionKey = `${user?.id || ''}:${shop?.id || ''}`;
+  const sessionKeyRef = useRef<string>(sessionKey);
+
+  // 0. Reset all dashboard/staleness state whenever the logged-in
+  //    user or shop changes (login, logout+login, shop switch).
+  //    Without this, refreshFreshData's "keep local if server has fewer
+  //    txns" guard below will compare the NEW session's correct (smaller)
+  //    server count against the OLD session's stale, larger local count,
+  //    and incorrectly keep showing the previous account's numbers.
+  useEffect(() => {
+    if (sessionKeyRef.current !== sessionKey) {
+      console.log('[Dashboard] Session changed – resetting dashboard state', {
+        from: sessionKeyRef.current,
+        to: sessionKey,
+      });
+      sessionKeyRef.current = sessionKey;
+      prevSalesCount.current = 0;
+      prevPendingSales.current = 0;
+      setData(null);
+      setInitialLoadComplete(false);
+      setLastUpdated(null);
+      setSelectedUserId(null);
+    }
+  }, [sessionKey]);
 
   // Fetch cashiers AND add owner if owner role (online / cached offline)
   useEffect(() => {
@@ -242,37 +267,47 @@ export default function Dashboard() {
     }
   }, [offlineData]);
 
-  // 4. Keep ref in sync whenever data changes (for stale-check)
-  useEffect(() => {
-    if (data) {
-      localTxnCountRef.current = data.transaction_count;
-    }
-  }, [data]);
-
-  // 5. Background refresh (stale-while-revalidate) – only if online
+  // 4. Background refresh (stale-while-revalidate) – only if online
   //    Stable dependencies: startDate, endDate
   const refreshFreshData = useCallback(async (userId?: string) => {
     if (!navigator.onLine) return;
+
+    // Capture which session this request was made for. If the user
+    // logs out/in (or switches shop) before the response comes back,
+    // we must discard the response instead of applying it to the new
+    // session's state.
+    const requestSessionKey = sessionKeyRef.current;
+
     setFetchingFresh(true);
     try {
       const params: any = { start: startDate, end: endDate };
       if (userId) params.user_id = userId;
 
       const res = await api.get('/reports/dashboard/', { params });
-      
-      // Prevent flicker: keep local data if server hasn't caught up yet
-      if (localTxnCountRef.current && res.data.transaction_count < localTxnCountRef.current) {
-        console.log('[Dashboard] Server data seems stale (fewer txns), keeping local');
-        setLastUpdated(new Date()); // update timestamp to reflect attempt
+
+      if (sessionKeyRef.current !== requestSessionKey) {
+        console.log('[Dashboard] Session changed while request was in flight – discarding stale response');
         return;
       }
-      
+
+      // NOTE: we previously kept local data whenever the server's
+      // transaction_count was lower than the local count, to avoid a
+      // flicker while the server "caught up". That heuristic was unsafe:
+      // the local count comes from the full IndexedDB sales cache (broad),
+      // while /reports/dashboard/ is correctly scoped to the selected
+      // date range + user (narrow). A correctly-filtered server count will
+      // almost always be <= the broad local count, so the guard nearly
+      // always won and silently showed wrong numbers. The server response
+      // is authoritative once we know it belongs to the current session
+      // (checked above) — just use it.
       setData(res.data);
       setLastUpdated(new Date());
     } catch (err) {
       console.warn('[Dashboard] Fresh data fetch failed, keeping cached', err);
     } finally {
-      setFetchingFresh(false);
+      if (sessionKeyRef.current === requestSessionKey) {
+        setFetchingFresh(false);
+      }
     }
   }, [startDate, endDate]);
 

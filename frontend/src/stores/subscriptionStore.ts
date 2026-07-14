@@ -4,7 +4,7 @@ import { db } from '../lib/dexie';
 import api from '../services/api';
 import { useAuthStore } from './authStore';
 
-interface Plan {
+export interface Plan {
   id: string;
   name: string;
   duration_days: number;

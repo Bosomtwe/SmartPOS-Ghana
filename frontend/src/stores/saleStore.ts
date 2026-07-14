@@ -5,13 +5,20 @@ import api from '../services/api';
 import { useAuthStore } from './authStore';
 
 // ---------- Helper to always get a valid shopId ----------
+// IMPORTANT: this intentionally does NOT fall back to reading a shopId off
+// a cached IndexedDB record. logout() preserves db.sales for offline use,
+// so between a logout and the next login completing, useAuthStore.shop is
+// null and localStorage 'shopId' has been cleared — falling back to "the
+// first sale in the DB" would silently resolve to the PREVIOUS session's
+// shop and leak its data into whatever triggers a fetch during that gap.
+// Returning null here is correct: it means "no authenticated shop yet",
+// and callers already handle that by bailing out.
 const getShopId = async (): Promise<string | null> => {
   const shop = useAuthStore.getState().shop;
   if (shop?.id) return shop.id;
   const stored = localStorage.getItem('shopId');
   if (stored) return stored;
-  const anySale = await db.sales.limit(1).first();
-  return anySale?.shopId || null;
+  return null;
 };
 
 // ---------- Async converter with shopId fallback ----------
@@ -82,7 +89,18 @@ export const useSalesStore = create<SalesState>((set, get) => ({
     set({ sales: [], totalCount: 0 });
   },
 
+  // 🔧 NEW: Reset the fetch lock so the next shop's fetch can start immediately
+  __resetLock: () => {
+    saleFetchPromise = null;
+  },
+
   fetchSales: async (startDate, endDate, page = 1, userId) => {
+    const shopIdAtStart = await getShopId();
+    if (!shopIdAtStart) {
+      set({ loading: false, sales: [] });
+      return;
+    }
+   
     if (saleFetchPromise) {
       console.log('[saleStore] Skipping duplicate fetch – one already in progress');
       return saleFetchPromise;
@@ -115,7 +133,7 @@ export const useSalesStore = create<SalesState>((set, get) => ({
         // Start with current in‑memory sales
         let baseSales = get().sales.length > 0 ? [...get().sales] : [];
 
-        // Load only sales for THIS shop from IndexedDB – no fallback to all sales
+        // Load only sales for THIS shop from IndexedDB – no fallback to all sales 
         let cached: Sale[] = [];
         try {
           cached = await db.sales.where('shopId').equals(shopId).toArray();
@@ -150,9 +168,17 @@ export const useSalesStore = create<SalesState>((set, get) => ({
           });
         }
 
-        // Persist the full (filtered) list back to IndexedDB
+        // Persist to IndexedDB. IMPORTANT: this must be a pure upsert, never
+        // preceded by a clear()/delete(). bulkPut only adds/updates the rows
+        // it's given, keyed by `id` — it can never remove other rows. The
+        // previous version did `db.sales.clear()` (unscoped, wiping every
+        // shop's cached sales) before re-inserting only `baseSales`. If
+        // baseSales was ever computed as narrower than what was actually on
+        // disk — e.g. a subtle shopId format mismatch silently dropping
+        // records from the `toAdd` merge above — that narrower set became
+        // the ONLY sales left in the entire table, permanently, for every
+        // shop. Never precede this write with a clear/delete of any scope.
         try {
-          await db.sales.clear();
           await db.sales.bulkPut(baseSales);
           console.log(`[saleStore] Persisted ${baseSales.length} sales to IndexedDB`);
         } catch (e) {
@@ -207,6 +233,14 @@ export const useSalesStore = create<SalesState>((set, get) => ({
         if (effectiveUserId) params.user_id = effectiveUserId;
 
         const response = await api.get('/sales/list/', { params });
+
+        // 🔧 OPTIMIZATION: Discard if shop changed
+        const currentShopId = await getShopId();
+        if (currentShopId !== shopIdAtStart) {
+          console.log('[saleStore] Shop changed – discarding stale response');
+          return;
+        }
+
         const salesData = await Promise.all(response.data.results.map(toCamelSale));
         console.log(`[saleStore] Received ${salesData.length} sales from server`);
 

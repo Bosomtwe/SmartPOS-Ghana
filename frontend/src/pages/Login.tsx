@@ -57,6 +57,13 @@ export default function Login() {
   // Offline session resume logic
   useEffect(() => {
     const tryOfflineSession = () => {
+      // ⛔ Manual logout – skip auto‑login completely
+      if (sessionStorage.getItem('manualLogout') === 'true') {
+        sessionStorage.removeItem('manualLogout');
+        setCheckingOfflineSession(false);
+        return;
+      }
+
       if (token && user && shop) {
         const tokenValid = isTokenValid(token);
         if (tokenValid) {
@@ -99,10 +106,13 @@ export default function Login() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isOnline) {
+
+    // 🔌 Prevent login attempts when offline – no network = no token
+    if (!navigator.onLine) {
       setError('No internet connection. Please connect and try again.');
       return;
     }
+    
     setLoading(true);
     setError('');
     try {

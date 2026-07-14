@@ -34,6 +34,16 @@ api.interceptors.request.use(
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
+
+    // Cache-busting for GETs: a cache keyed only on URL (browser HTTP
+    // cache, CDN, or a service worker with a cache-first strategy that
+    // ignores Cache-Control) can otherwise serve a response fetched under
+    // a different user's session for the exact same URL. This param
+    // guarantees the URL itself differs per request.
+    if ((config.method || 'get').toLowerCase() === 'get') {
+      config.params = { ...(config.params || {}), _: Date.now() };
+    }
+
     return config;
   },
   (error) => Promise.reject(error)
@@ -56,13 +66,24 @@ api.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    // Handle 403 Forbidden – only redirect when online
+    // 🔧 UPDATED: Handle 403 Forbidden – only redirect if error is subscription‑related
     if (error.response?.status === 403) {
+      const data = error.response.data;
+
+      // Determine if the 403 is explicitly about subscriptions
+      const isSubscriptionError =
+        (typeof data === 'string' && data.toLowerCase().includes('subscription')) ||
+        (data?.detail && typeof data.detail === 'string' && data.detail.toLowerCase().includes('subscription')) ||
+        (data?.error && typeof data.error === 'string' && data.error.toLowerCase().includes('subscription'));
+
       const isOnSubscriptionPage = window.location.pathname.includes('/subscription');
-      const isSubscriptionApi = originalRequest.url?.includes('/subscriptions/');
-      if (!isOnSubscriptionPage && !isSubscriptionApi && navigator.onLine) {
+
+      // Only force‑redirect if it's a subscription issue and we're not already there
+      if (isSubscriptionError && !isOnSubscriptionPage && navigator.onLine) {
         window.location.href = '/subscription';
       }
+
+      // In all cases, reject so the calling code can handle it (e.g., show a message)
       return Promise.reject(error);
     }
 

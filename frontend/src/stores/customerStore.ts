@@ -7,13 +7,16 @@ import { useUIStore } from './uiStore';
 import { useSalesStore } from './saleStore';
 import type { Sale } from '../lib/dexie';
 
+// IMPORTANT: no fallback to a cached IndexedDB record's shopId here — see
+// the detailed explanation in saleStore.ts's getShopId. That fallback can
+// resolve to a PREVIOUS session's shop during the gap between logout and
+// the next login completing, since logout preserves cached data.
 const getShopId = async (): Promise<string | null> => {
   const shop = useAuthStore.getState().shop;
   if (shop?.id) return shop.id;
   const stored = localStorage.getItem('shopId');
   if (stored) return stored;
-  const anyCustomer = await db.customers.limit(1).first();
-  return anyCustomer?.shopId || null;
+  return null;
 };
 
 const parseCustomerFromApi = async (raw: any): Promise<Customer> => {
@@ -101,6 +104,12 @@ export const useCustomerStore = create<CustomerState>((set, get) => ({
   manuallySyncing: false,
 
   fetchCustomers: async () => {
+    const shopIdAtStart = await getShopId();
+    if (!shopIdAtStart) {
+      set({ loading: false, customers: [] });
+      return;
+    }
+
     console.log('[customerStore] fetchCustomers called, online:', navigator.onLine);
     set({ loading: true, error: null });
 
@@ -144,6 +153,15 @@ export const useCustomerStore = create<CustomerState>((set, get) => ({
       try {
         console.log('[customerStore] Fetching fresh customers from server...');
         const rawCustomers = await fetchAllPages('/customers/');
+
+
+        // 🔧 OPTIMIZATION: Discard if shop changed
+        const currentShopId = await getShopId();
+        if (currentShopId !== shopIdAtStart) {
+          console.log('[customerStore] Shop changed – discarding stale response');
+          return;
+        }
+        
         const fresh = await Promise.all(rawCustomers.map(parseCustomerFromApi));
         console.log(`[customerStore] Synced ${fresh.length} customers from server`);
 
@@ -370,4 +388,10 @@ export const useCustomerStore = create<CustomerState>((set, get) => ({
   clearCustomers: () => {
     set({ customers: [] });
   },
+
+  // 🔧 NEW: No fetch lock exists, but added for consistency
+  __resetLock: () => {
+    // no‑op – customerStore doesn't use a fetch lock
+  },
+  
 }));

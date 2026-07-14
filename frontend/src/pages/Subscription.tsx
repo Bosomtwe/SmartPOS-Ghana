@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../stores/authStore';
 import { useUIStore } from '../stores/uiStore';
-import { useSubscriptionStore } from '../stores/subscriptionStore';
+import { useSubscriptionStore, type Plan } from '../stores/subscriptionStore';
 
 export default function Subscription() {
   const { user } = useAuthStore();
@@ -163,7 +163,7 @@ export default function Subscription() {
 
       {plans.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {plans.map((plan) => (
+          {plans.map((plan: Plan) => (
             <div key={plan.id} className="border rounded-2xl p-6 shadow-sm hover:shadow-md transition">
               <h2 className="text-xl font-bold">{plan.name}</h2>
               <div className="mt-2 mb-4">
